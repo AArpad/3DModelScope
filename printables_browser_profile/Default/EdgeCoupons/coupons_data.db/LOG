@@ -1,0 +1,5 @@
+2026/09/09-15:49:18.647 9f7c Creating DB C:\Users\ÁrpádNagykékesi\Documents\Python\3DSites\printables_browser_profile\Default\EdgeCoupons/coupons_data.db since it was missing.
+2026/09/09-15:49:18.879 9f7c Reusing MANIFEST C:\Users\ÁrpádNagykékesi\Documents\Python\3DSites\printables_browser_profile\Default\EdgeCoupons/coupons_data.db/MANIFEST-000001
+2026/09/09-15:49:20.235 4908 Level-0 table #5: started
+2026/09/09-15:49:20.247 4908 Level-0 table #5: 683273 bytes OK
+2026/09/09-15:49:20.258 4908 Delete type=0 #3
