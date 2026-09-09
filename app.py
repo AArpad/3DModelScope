@@ -497,7 +497,7 @@ class Database:
     def save_image(self, record_id: int, image_data: bytes) -> str:
         if not image_data:
             return ""
-        filename = f"{record_id}.{self.image_extension(image_data)}"
+        filename = f"{record_id:08d}.{self.image_extension(image_data)}"
         (self.image_dir / filename).write_bytes(image_data)
         self.connection.execute("UPDATE records SET image_path=? WHERE id=?", (filename, record_id))
         self.connection.commit()
@@ -521,8 +521,18 @@ class Database:
             candidate = self.image_dir / Path(stored_path).name
             if candidate.is_file():
                 return str(candidate.resolve())
-        candidates = sorted(self.image_dir.glob(f"{record_id}.*"))
+        # Falls back to a glob for legacy rows saved before filenames were zero-padded.
+        candidates = sorted(self.image_dir.glob(f"{record_id:08d}.*")) or sorted(self.image_dir.glob(f"{record_id}.*"))
         return str(candidates[0].resolve()) if candidates else ""
+
+    # Removes a record's image file from disk, if it has one.
+    def delete_image_file(self, record_id: int, stored_path: str = "") -> None:
+        path = self.local_image_path(record_id, stored_path)
+        if path:
+            try:
+                Path(path).unlink()
+            except OSError:
+                pass
 
     def all(
         self,
@@ -561,10 +571,18 @@ class Database:
         self.connection.commit()
 
     def delete(self, record_id: int) -> None:
+        row = self.connection.execute("SELECT image_path FROM records WHERE id=?", (record_id,)).fetchone()
+        if row is not None:
+            self.delete_image_file(record_id, row["image_path"])
         self.connection.execute("DELETE FROM records WHERE id=?", (record_id,))
         self.connection.commit()
 
     def delete_viewed_not_interested(self) -> int:
+        rows = self.connection.execute(
+            "SELECT id, image_path FROM records WHERE viewed=1 AND not_interested=1"
+        ).fetchall()
+        for row in rows:
+            self.delete_image_file(row["id"], row["image_path"])
         cursor = self.connection.execute(
             "DELETE FROM records WHERE viewed=1 AND not_interested=1"
         )
