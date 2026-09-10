@@ -20,6 +20,11 @@ from tkinter import messagebox, ttk
 from PIL import Image, ImageTk
 from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
 from playwright.sync_api import sync_playwright
+# Printables specifically needs Patchright: it patches the CDP-level automation leaks that
+# Cloudflare's managed challenge fingerprints, which plain Playwright can't avoid regardless
+# of headless/headed mode. MakerWorld has no such challenge, so it stays on plain Playwright.
+from patchright.sync_api import TimeoutError as PatchrightTimeoutError
+from patchright.sync_api import sync_playwright as sync_patchright
 
 
 APP_DIR = Path(sys.executable).resolve().parent if getattr(sys, "frozen", False) else Path(__file__).resolve().parent
@@ -27,9 +32,10 @@ DB_PATH = APP_DIR / "3DModelScope.db"
 # In a PyInstaller onefile build, bundled data (added via --add-data) is unpacked to a temp
 # directory at runtime (sys._MEIPASS), not next to the exe, so the icon is looked up there.
 ICON_PATH = Path(getattr(sys, "_MEIPASS", APP_DIR)) / "app_icon.ico" if getattr(sys, "frozen", False) else APP_DIR / "app_icon.ico"
-# Persistent browser profile for Printables: keeps the Cloudflare clearance cookie between
-# runs, so once the interstitial is passed once, later scans usually skip it entirely.
+# Persistent browser profiles for Cloudflare-protected sources: keep the clearance cookie
+# between runs, so once the interstitial is passed once, later scans usually skip it entirely.
 PRINTABLES_PROFILE_DIR = APP_DIR / "printables_browser_profile"
+THINGIVERSE_PROFILE_DIR = APP_DIR / "thingiverse_browser_profile"
 USER_AGENT = "WebRecordCollector/1.0"
 SOURCE_SEEDS = (
     ("MakerWorld", "MakerWorld", "https://makerworld.com", "makerworld", "continuous"),
@@ -192,23 +198,29 @@ def wait_out_cloudflare_challenge(
     max_attempts: int = 12,
     wait_ms: int = 5_000,
     reload_page: bool = False,
+    content_selector: str = 'a[href*="/model/"]',
 ) -> bool:
-    """Polls a "Just a moment..." Cloudflare interstitial until it clears on its own.
+    """Polls a Cloudflare interstitial until it clears on its own.
 
     This only waits out the passive/managed challenge that a normal browser also clears
     automatically after a few seconds - it never attempts to click a verification checkbox
     or otherwise defeat an interactive challenge. When reload_page is set, a single manual
     reload is tried halfway through the wait, since that sometimes nudges the passive
     challenge into completing where just waiting does not.
+
+    Whether the challenge is still showing is judged by the absence of content_selector,
+    not by the interstitial's title text - Cloudflare serves that title translated into the
+    browser's own language ("Egy pillanat..." in Hungarian, for example), so matching only
+    the English "Just a moment"/"Checking your browser" strings silently failed to detect
+    the challenge at all on a non-English browser.
     """
     def is_challenge_showing() -> bool:
         # Cloudflare's own auto-reload can momentarily destroy the page's execution context;
         # treat that as "still on the challenge" rather than letting it blow up the whole scan.
         try:
-            title = (page.title() or "").lower()
+            return page.locator(content_selector).count() == 0
         except Exception:
             return True
-        return "just a moment" in title or "checking your browser" in title
 
     reloaded = False
     for attempt in range(max_attempts):
@@ -241,42 +253,41 @@ def fetch_printables_listing(
 ) -> list[tuple[str, str, str]]:
     """Loads Printables' listing page (waiting out any Cloudflare interstitial first) and
     returns unique model cards. Kept fully separate from fetch_makerworld_listing so that
-    function never needs to change."""
+    function never needs to change.
+
+    Runs headed (a visible window), not headless: Cloudflare's managed challenge never
+    cleared in headless testing regardless of settings, while a genuinely visible window -
+    via Patchright, which patches out the CDP-level automation fingerprint plain Playwright
+    leaks - usually clears it on its own within seconds. If it doesn't, the window stays open
+    and interactive, so the user can just click through it there like a normal browser tab."""
     models: dict[str, tuple[str, str, str]] = {}
     PRINTABLES_PROFILE_DIR.mkdir(parents=True, exist_ok=True)
-    with sync_playwright() as playwright:
+    with sync_patchright() as playwright:
         # A persistent profile keeps cookies (incl. Cloudflare's clearance cookie) between runs,
         # so a challenge passed once usually doesn't need to be passed again for a while.
+        # Deliberately no custom user_agent/viewport/headers here: a mismatch between a forced
+        # UA string and the real installed Edge's actual version is itself a bot signal, and
+        # testing found the plain, unmodified profile clears the challenge more reliably.
         context = playwright.chromium.launch_persistent_context(
             str(PRINTABLES_PROFILE_DIR),
             channel="msedge",
-            headless=True,
-            locale="en-US",
-            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36 Edg/131.0.0.0",
-            viewport={"width": 1366, "height": 900},
-            extra_http_headers={"Accept-Language": "en-US,en;q=0.9"},
+            headless=False,
+            # Still a real, visible window (required to pass Cloudflare) - just starts
+            # minimized so it doesn't steal focus or clutter the screen during a normal run.
+            args=["--start-minimized"],
         )
-        # A plain headless browser exposes navigator.webdriver=true, which is one of the
-        # signals Cloudflare's bot check looks at; hiding it makes the automated Edge look
-        # like the same Edge a person would use to browse the same public listing page.
-        context.add_init_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined});")
         page = context.pages[0] if context.pages else context.new_page()
-        # The listing parser only needs card links, titles, and image URLs.
-        page.route(
-            "**/*",
-            lambda route: route.abort()
-            if route.request.resource_type in {"image", "media", "font"}
-            else route.continue_(),
-        )
         try:
             page.goto(url, wait_until="domcontentloaded", timeout=45_000)
-            if not wait_out_cloudflare_challenge(page, status_callback, cancel_check, reload_page=True):
+            if status_callback:
+                status_callback("Cloudflare ellenőrzés folyamatban - ha kell, kattints át rajta a felugró ablakban...")
+            if not wait_out_cloudflare_challenge(page, status_callback, cancel_check, max_attempts=24, reload_page=True):
                 if cancel_check and cancel_check():
                     return []
                 raise ValueError("A Printables Cloudflare-ellenőrzése nem oldódott fel időben. Próbáld újra kicsit később.")
             try:
                 page.get_by_role("button", name=re.compile(r"(Accept|Elfogad)", re.IGNORECASE)).click(timeout=5_000)
-            except PlaywrightTimeoutError:
+            except PatchrightTimeoutError:
                 pass
             page.wait_for_selector('a[href*="/model/"]', timeout=30_000)
             previous_count = 0
@@ -289,12 +300,16 @@ def fetch_printables_listing(
                     href = card.get_attribute("href") or ""
                     if "/model/" not in href:
                         continue
-                    image = card.locator("img").first
+                    # Each card has two <img> tags: a permanent base64 blur placeholder first,
+                    # then the real thumbnail - .last skips past the placeholder to the real one.
+                    image = card.locator("img").last
                     has_image = image.count() > 0
                     image_url = ""
                     if has_image:
                         image_url = image.get_attribute("src") or image.get_attribute("data-src") or ""
-                        image_url = urllib.parse.urljoin(page.url, image_url)
+                        if image_url.startswith("data:"):
+                            image_url = ""
+                        image_url = urllib.parse.urljoin(page.url, image_url) if image_url else ""
                     title = (image.get_attribute("alt") or "").strip() if has_image else card.inner_text().strip()
                     if not title:
                         continue
@@ -315,8 +330,109 @@ def fetch_printables_listing(
                 previous_count = len(models)
                 page.mouse.wheel(0, 15000)
                 page.wait_for_timeout(1800)
-        except PlaywrightTimeoutError as error:
+        except PatchrightTimeoutError as error:
             raise ValueError("A Printables lista nem töltődött be időben.") from error
+        finally:
+            context.close()
+    return list(models.values())
+
+
+_THING_HREF_PATTERN = re.compile(r"^/thing:\d+$")
+
+
+def _with_page(url: str, page_number: int) -> str:
+    """Sets/overrides the "page" query parameter of a listing URL, keeping every other
+    parameter (per_page, sort, type, q, ...) exactly as the user configured them."""
+    parts = urllib.parse.urlsplit(url)
+    query = urllib.parse.parse_qs(parts.query, keep_blank_values=True)
+    query["page"] = [str(page_number)]
+    new_query = urllib.parse.urlencode(query, doseq=True)
+    return urllib.parse.urlunsplit((parts.scheme, parts.netloc, parts.path, new_query, parts.fragment))
+
+
+def fetch_thingiverse_listing(
+    url: str,
+    max_count: int | None = None,
+    unchanged_round_limit: int = 3,
+    progress_callback: Callable[[int], None] | None = None,
+    cancel_check: Callable[[], bool] | None = None,
+    status_callback: Callable[[str], None] | None = None,
+) -> list[tuple[str, str, str]]:
+    """Loads Thingiverse search result pages (page=1, 2, 3, ...) and returns unique thing
+    cards. Unlike MakerWorld/Printables, Thingiverse's search is paged rather than an
+    infinite-scroll list, so "loading more" means navigating to the next page= value instead
+    of scrolling - but it sits behind the same kind of Cloudflare managed challenge, so it
+    reuses the same headed-Patchright approach as Printables."""
+    models: dict[str, tuple[str, str, str]] = {}
+    THINGIVERSE_PROFILE_DIR.mkdir(parents=True, exist_ok=True)
+    start_page = int(urllib.parse.parse_qs(urllib.parse.urlsplit(url).query).get("page", ["1"])[0] or "1")
+    with sync_patchright() as playwright:
+        context = playwright.chromium.launch_persistent_context(
+            str(THINGIVERSE_PROFILE_DIR),
+            channel="msedge",
+            headless=False,
+            # Still a real, visible window (required to pass Cloudflare) - just starts
+            # minimized so it doesn't steal focus or clutter the screen during a normal run.
+            args=["--start-minimized"],
+        )
+        page = context.pages[0] if context.pages else context.new_page()
+        try:
+            no_growth_rounds = 0
+            page_number = start_page
+            while True:
+                if cancel_check and cancel_check():
+                    break
+                page.goto(_with_page(url, page_number), wait_until="domcontentloaded", timeout=45_000)
+                if page_number == start_page and status_callback:
+                    status_callback("Cloudflare ellenőrzés folyamatban - ha kell, kattints át rajta a felugró ablakban...")
+                if not wait_out_cloudflare_challenge(
+                    page, status_callback, cancel_check, max_attempts=24, reload_page=True,
+                    content_selector='.item-card-container a[href^="/thing:"]',
+                ):
+                    if cancel_check and cancel_check():
+                        break
+                    raise ValueError("A Thingiverse Cloudflare-ellenőrzése nem oldódott fel időben. Próbáld újra kicsit később.")
+                cards = page.locator(".item-card-container")
+                before_count = len(models)
+                for card in cards.all():
+                    # Each card has several <a href="/thing:...">: one just wrapping the
+                    # thumbnail image (no text) and one carrying the visible title text -
+                    # the title-specific class picks the right one directly.
+                    link = card.locator("a.item-card-header__title").first
+                    if link.count() == 0:
+                        continue
+                    href = link.get_attribute("href") or ""
+                    if not _THING_HREF_PATTERN.match(href):
+                        continue
+                    title = link.inner_text().strip()
+                    if not title:
+                        continue
+                    model_url = urllib.parse.urljoin(page.url, href)
+                    if model_url in models:
+                        continue
+                    image = card.locator("img").first
+                    image_url = image.get_attribute("src") or "" if image.count() > 0 else ""
+                    if image_url:
+                        image_url = urllib.parse.urljoin(page.url, image_url)
+                    models[model_url] = (model_url, title, image_url)
+                    if progress_callback:
+                        progress_callback(len(models))
+                    if max_count and len(models) >= max_count:
+                        return list(models.values())
+                if len(models) == before_count:
+                    # An empty page (no thing cards at all) means there simply are no more
+                    # results to page through - stop right away instead of waiting out the
+                    # unchanged-round limit, which is meant for "these are all already saved".
+                    if cards.count() == 0:
+                        break
+                    no_growth_rounds += 1
+                    if no_growth_rounds >= unchanged_round_limit:
+                        break
+                else:
+                    no_growth_rounds = 0
+                page_number += 1
+        except PatchrightTimeoutError as error:
+            raise ValueError("A Thingiverse lista nem töltődött be időben.") from error
         finally:
             context.close()
     return list(models.values())
@@ -853,11 +969,12 @@ class App(tk.Tk):
         list_tab.rowconfigure(0, weight=1)
         self.record_tree = ttk.Treeview(
             list_tab,
-            columns=("source", "title", "url", "image_url", "created", "viewed", "interest"),
+            columns=("id", "source", "title", "url", "image_url", "created", "viewed", "interest"),
             show="headings",
             selectmode="extended",
         )
         headings = {
+            "id": "ID",
             "source": "Forrás",
             "title": "Cím",
             "url": "URL",
@@ -866,7 +983,7 @@ class App(tk.Tk):
             "viewed": "Megnézve",
             "interest": "Érdekel",
         }
-        widths = {"source": 105, "title": 240, "url": 300, "image_url": 300, "created": 145, "viewed": 85, "interest": 85}
+        widths = {"id": 60, "source": 105, "title": 240, "url": 300, "image_url": 300, "created": 145, "viewed": 85, "interest": 85}
         for column in headings:
             self.record_tree.heading(column, text=headings[column])
             self.record_tree.column(column, width=widths[column], anchor="w")
@@ -1162,7 +1279,7 @@ class App(tk.Tk):
                 "",
                 "end",
                 iid=str(record["id"]),
-                values=(record["source_name"] or "Egyéb", record["title"], record["url"], image_path or "Nincs letöltött kép", record["created_at"], "Igen" if record["viewed"] else "Nem", interest),
+                values=(record["id"], record["source_name"] or "Egyéb", record["title"], record["url"], image_path or "Nincs letöltött kép", record["created_at"], "Igen" if record["viewed"] else "Nem", interest),
             )
             if position % 50 == 0 and self.startup_window.winfo_exists():
                 self.update_startup_status(f"Rekordlista felépítése: {position}/{len(self.records)}")
@@ -1372,7 +1489,11 @@ class App(tk.Tk):
         self.show_load_window()
         self.load_window_progress.start(12)
         self.load_window_status.set("Böngésző indítása...")
-        threading.Thread(target=self.fetch_and_add, args=(source["base_url"], source_id, hours, max_count, unchanged_round_limit), daemon=True).start()
+        threading.Thread(
+            target=self.fetch_and_add,
+            args=(source["base_url"], source_id, hours, max_count, unchanged_round_limit),
+            daemon=True,
+        ).start()
 
     # Asks whether to keep or discard this run's already-downloaded records, then signals the
     # background thread to stop. Records saved in earlier runs are never touched.
@@ -1388,7 +1509,14 @@ class App(tk.Tk):
         self.load_window_status.set("Megszakítás folyamatban...")
 
     # Downloads, parses and stores source data using the selected list profile.
-    def fetch_and_add(self, url: str, selected_source_id: int, hours: int, max_count: int | None, unchanged_round_limit: int) -> None:
+    def fetch_and_add(
+        self,
+        url: str,
+        selected_source_id: int,
+        hours: int,
+        max_count: int | None,
+        unchanged_round_limit: int,
+    ) -> None:
         try:
             source = self.database.source_by_id(selected_source_id)
             if source is None:
@@ -1410,13 +1538,14 @@ class App(tk.Tk):
                 consecutive_existing = 0
                 cancelled = False
                 asked_continue = False
+                total_models = len(models)
                 for position, (model_url, title, image_url) in enumerate(models, start=1):
                     if self.cancel_event.is_set():
                         cancelled = True
                         break
                     if self.database.record_exists(model_url):
                         consecutive_existing += 1
-                        self.report_progress(position, "Modellek mentése")
+                        self.report_phase(position, total_models, title, "már megvan, kihagyva")
                         if consecutive_existing >= unchanged_round_limit and not asked_continue:
                             asked_continue = True
                             remaining = len(models) - position
@@ -1426,9 +1555,11 @@ class App(tk.Tk):
                             consecutive_existing = 0
                         continue
                     consecutive_existing = 0
+                    self.report_phase(position, total_models, title, "rekord készítése")
                     record_id = self.database.add(model_url, title, image_url, source["id"])
                     self.current_run_record_ids.append(record_id)
                     if image_url:
+                        self.report_phase(position, total_models, title, "kép másolása")
                         try:
                             image_data = download_image_data(image_url)
                             if image_data:
@@ -1436,7 +1567,7 @@ class App(tk.Tk):
                         except (OSError, ValueError, urllib.error.URLError):
                             pass
                     added_count += 1
-                    self.report_progress(position, "Modellek és képek mentése")
+                    self.report_phase(position, total_models, title, "kész")
                 if cancelled and self.pending_cancel_delete:
                     for saved_id in self.current_run_record_ids:
                         self.database.delete(saved_id)
@@ -1493,6 +1624,59 @@ class App(tk.Tk):
                     added_count = 0
                 self.after(0, lambda: self.add_finished(added_count, len(models), cancelled=cancelled))
                 return
+            if source["parser_type"] == "thingiverse":
+                # Thingiverse pages through numbered search-result pages instead of infinite
+                # scroll, but sits behind the same kind of Cloudflare check as Printables.
+                models = fetch_thingiverse_listing(
+                    url,
+                    max_count,
+                    unchanged_round_limit,
+                    lambda count: self.report_progress(count, "Modellek felderítve"),
+                    cancel_check=self.cancel_event.is_set,
+                    status_callback=self.report_status,
+                )
+                self.after(0, lambda: self.progress_bar.stop())
+                self.after(0, lambda: self.progress_bar.configure(mode="determinate", maximum=max(len(models), 1), value=0))
+                added_count = 0
+                consecutive_existing = 0
+                cancelled = False
+                asked_continue = False
+                total_models = len(models)
+                for position, (model_url, title, image_url) in enumerate(models, start=1):
+                    if self.cancel_event.is_set():
+                        cancelled = True
+                        break
+                    if self.database.record_exists(model_url):
+                        consecutive_existing += 1
+                        self.report_phase(position, total_models, title, "már megvan, kihagyva")
+                        if consecutive_existing >= unchanged_round_limit and not asked_continue:
+                            asked_continue = True
+                            remaining = len(models) - position
+                            if remaining > 0 and not self.confirm_continue_scan(unchanged_round_limit, remaining):
+                                cancelled = self.cancel_event.is_set()
+                                break
+                            consecutive_existing = 0
+                        continue
+                    consecutive_existing = 0
+                    self.report_phase(position, total_models, title, "rekord készítése")
+                    record_id = self.database.add(model_url, title, image_url, source["id"])
+                    self.current_run_record_ids.append(record_id)
+                    if image_url:
+                        self.report_phase(position, total_models, title, "kép másolása")
+                        try:
+                            image_data = download_image_data(image_url)
+                            if image_data:
+                                self.database.save_image(record_id, image_data)
+                        except (OSError, ValueError, urllib.error.URLError):
+                            pass
+                    added_count += 1
+                    self.report_phase(position, total_models, title, "kész")
+                if cancelled and self.pending_cancel_delete:
+                    for saved_id in self.current_run_record_ids:
+                        self.database.delete(saved_id)
+                    added_count = 0
+                self.after(0, lambda: self.add_finished(added_count, len(models), cancelled=cancelled))
+                return
             title, image_url = fetch_page(url, source["parser_type"])
             # The hours value is passed into the loading pipeline for the source-specific list parser.
             record_id = self.database.add(url, title, image_url, source["id"])
@@ -1535,6 +1719,14 @@ class App(tk.Tk):
         self.after(0, lambda count=count: self.progress_bar.configure(value=count))
         self.after(0, lambda label=label, count=count: self.status_var.set(f"{label}: {count}"))
         self.after(0, lambda label=label, count=count: self.load_window_status.set(f"{label}: {count}") if self.load_window is not None else None)
+
+    # Detailed per-model status: shows which model is being processed and in which phase
+    # (title/record creation, image copying, ...), so a slow run is still legible.
+    def report_phase(self, position: int, total: int, title: str, phase: str) -> None:
+        text = f"[{position}/{total}] {title} - {phase}"
+        self.after(0, lambda count=position: self.progress_bar.configure(value=count))
+        self.after(0, lambda text=text: self.status_var.set(text))
+        self.after(0, lambda text=text: self.load_window_status.set(text) if self.load_window is not None else None)
 
     # Plain status text without a count, used e.g. while waiting out a Cloudflare interstitial.
     def report_status(self, text: str) -> None:

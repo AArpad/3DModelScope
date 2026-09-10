@@ -1,5 +1,6 @@
-2026/09/09-15:49:18.647 9f7c Creating DB C:\Users\ÁrpádNagykékesi\Documents\Python\3DSites\printables_browser_profile\Default\EdgeCoupons/coupons_data.db since it was missing.
-2026/09/09-15:49:18.879 9f7c Reusing MANIFEST C:\Users\ÁrpádNagykékesi\Documents\Python\3DSites\printables_browser_profile\Default\EdgeCoupons/coupons_data.db/MANIFEST-000001
-2026/09/09-15:49:20.235 4908 Level-0 table #5: started
-2026/09/09-15:49:20.247 4908 Level-0 table #5: 683273 bytes OK
-2026/09/09-15:49:20.258 4908 Delete type=0 #3
+2026/09/10-11:17:14.383 7b78 Reusing MANIFEST C:\Users\ÁrpádNagykékesi\Documents\Python\3DSites\printables_browser_profile\Default\EdgeCoupons/coupons_data.db/MANIFEST-000001
+2026/09/10-11:17:14.436 7b78 Recovering log #10
+2026/09/10-11:17:14.451 7b78 Reusing old log C:\Users\ÁrpádNagykékesi\Documents\Python\3DSites\printables_browser_profile\Default\EdgeCoupons/coupons_data.db/000010.log 
+2026/09/10-11:17:14.938 4df0 Level-0 table #14: started
+2026/09/10-11:17:14.959 4df0 Level-0 table #14: 683376 bytes OK
+2026/09/10-11:17:14.964 4df0 Delete type=0 #10
