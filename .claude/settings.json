@@ -1,0 +1,11 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(.venv/Scripts/python.exe -c ' *)",
+      "Bash(rm -rf \"/c/Users/RPDNAG~1/AppData/Local/Temp/claude/c--Users--rp-dNagyk-kesi-Documents-Python-3DSites/00f1a6d5-25e9-42a4-bed4-0a5c20bf38f6/scratchpad/mw_pipeline_test\")",
+      "Bash(mkdir -p \"/c/Users/RPDNAG~1/AppData/Local/Temp/claude/c--Users--rp-dNagyk-kesi-Documents-Python-3DSites/00f1a6d5-25e9-42a4-bed4-0a5c20bf38f6/scratchpad/mw_pipeline_test\")",
+      "Bash(rm -f scratch_gql_req_0.json scratch_gql_resp_0.json)",
+      "Bash(rm -f scratch_printables_model.html)"
+    ]
+  }
+}

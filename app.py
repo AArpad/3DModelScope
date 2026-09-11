@@ -1,41 +1,52 @@
 from __future__ import annotations
 
 import html
+import json
 import math
 import re
+import shutil
 import sqlite3
 import sys
 import threading
 import urllib.error
 import urllib.parse
 import urllib.request
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from html.parser import HTMLParser
 from io import BytesIO
 from pathlib import Path
 from typing import Callable
 import tkinter as tk
-from tkinter import messagebox, ttk
+from tkinter import filedialog, messagebox, ttk
 
 from PIL import Image, ImageTk
 from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
 from playwright.sync_api import sync_playwright
-# Printables specifically needs Patchright: it patches the CDP-level automation leaks that
-# Cloudflare's managed challenge fingerprints, which plain Playwright can't avoid regardless
-# of headless/headed mode. MakerWorld has no such challenge, so it stays on plain Playwright.
+# Printables and Thingiverse specifically need Patchright: it patches the CDP-level
+# automation leaks that their Cloudflare managed challenge fingerprints, which plain
+# Playwright can't avoid regardless of headless/headed mode. MakerWorld has no such
+# challenge, so it stays on plain Playwright.
 from patchright.sync_api import TimeoutError as PatchrightTimeoutError
 from patchright.sync_api import sync_playwright as sync_patchright
 
 
 APP_DIR = Path(sys.executable).resolve().parent if getattr(sys, "frozen", False) else Path(__file__).resolve().parent
-DB_PATH = APP_DIR / "3DModelScope.db"
+# One consolidated data directory - the database, downloaded images and browser profiles all
+# live under here instead of being scattered loose next to the exe/script.
+APP_DATA_DIR = APP_DIR / "3DSModelScope"
+DB_PATH = APP_DATA_DIR / "3DModelScope.db"
 # In a PyInstaller onefile build, bundled data (added via --add-data) is unpacked to a temp
 # directory at runtime (sys._MEIPASS), not next to the exe, so the icon is looked up there.
 ICON_PATH = Path(getattr(sys, "_MEIPASS", APP_DIR)) / "app_icon.ico" if getattr(sys, "frozen", False) else APP_DIR / "app_icon.ico"
 # Persistent browser profiles for Cloudflare-protected sources: keep the clearance cookie
 # between runs, so once the interstitial is passed once, later scans usually skip it entirely.
-PRINTABLES_PROFILE_DIR = APP_DIR / "printables_browser_profile"
-THINGIVERSE_PROFILE_DIR = APP_DIR / "thingiverse_browser_profile"
+# LEGACY_*_PROFILE_DIR is where older builds put them, and ensure_browser_profile_dir below
+# migrates a profile found there so upgrading doesn't throw away an already-cleared cookie.
+BROWSER_PROFILES_DIR = APP_DATA_DIR / "browser_profiles"
+PRINTABLES_PROFILE_DIR = BROWSER_PROFILES_DIR / "printables"
+THINGIVERSE_PROFILE_DIR = BROWSER_PROFILES_DIR / "thingiverse"
+LEGACY_PRINTABLES_PROFILE_DIR = APP_DIR / "printables_browser_profile"
+LEGACY_THINGIVERSE_PROFILE_DIR = APP_DIR / "thingiverse_browser_profile"
 USER_AGENT = "WebRecordCollector/1.0"
 SOURCE_SEEDS = (
     ("MakerWorld", "MakerWorld", "https://makerworld.com", "makerworld", "continuous"),
@@ -49,11 +60,146 @@ LISTING_MODE_LABELS = {
     "single_page": "Egyetlen oldal",
 }
 
+THEME_LABELS = {
+    "light": "Világos",
+    "dark": "Sötét",
+    "solarized": "Solarized",
+    "solarized_dark": "Solarized Dark",
+}
+
+# Color palettes keyed the same as THEME_LABELS. Applied via ttk.Style (base 'clam', the only
+# built-in ttk theme that actually honors custom colors on Windows - 'vista'/'winnative'
+# mostly ignore them in favor of native chrome) plus direct configuration of the few plain Tk
+# widgets (the root window, the list/details PanedWindow sash, the Információ dialog's Text).
+THEMES = {
+    "light": {
+        "bg": "#f0f0f0", "fg": "#000000", "entry_bg": "#ffffff", "entry_fg": "#000000",
+        "select_bg": "#0078d7", "select_fg": "#ffffff", "tree_bg": "#ffffff", "tree_fg": "#000000",
+        "heading_bg": "#e5e5e5", "border": "#c0c0c0",
+    },
+    "dark": {
+        "bg": "#2b2b2b", "fg": "#e0e0e0", "entry_bg": "#3c3f41", "entry_fg": "#e0e0e0",
+        "select_bg": "#4a6da7", "select_fg": "#ffffff", "tree_bg": "#313335", "tree_fg": "#e0e0e0",
+        "heading_bg": "#3c3f41", "border": "#555555",
+    },
+    "solarized": {
+        "bg": "#fdf6e3", "fg": "#657b83", "entry_bg": "#eee8d5", "entry_fg": "#586e75",
+        "select_bg": "#268bd2", "select_fg": "#fdf6e3", "tree_bg": "#fdf6e3", "tree_fg": "#657b83",
+        "heading_bg": "#eee8d5", "border": "#93a1a1",
+    },
+    "solarized_dark": {
+        "bg": "#002b36", "fg": "#839496", "entry_bg": "#073642", "entry_fg": "#93a1a1",
+        "select_bg": "#268bd2", "select_fg": "#002b36", "tree_bg": "#002b36", "tree_fg": "#839496",
+        "heading_bg": "#073642", "border": "#586e75",
+    },
+}
+
+def shade_color(hex_color: str, amount: float) -> str:
+    """Lightens (amount > 0) or darkens (amount < 0) a "#rrggbb" color, blending it toward
+    white or black by that fraction. Used to derive a theme's raised-bevel edge colors from
+    its own background, instead of a separate fixed border color that can end up looking
+    right on a light theme and wrong on a dark one (or vice versa)."""
+    hex_color = hex_color.lstrip("#")
+    r, g, b = int(hex_color[0:2], 16), int(hex_color[2:4], 16), int(hex_color[4:6], 16)
+    if amount >= 0:
+        r, g, b = (channel + (255 - channel) * amount for channel in (r, g, b))
+    else:
+        r, g, b = (channel * (1 + amount) for channel in (r, g, b))
+    return f"#{int(r):02x}{int(g):02x}{int(b):02x}"
+
+
+APP_VERSION = "1.0"
+
+# Shown in the Információ dialog, newest first. Add one line here whenever a user-visible
+# change ships, so the in-app changelog stays a real record instead of drifting from reality.
+CHANGELOG = """\
+1.0 (2026-09-10)
+  - Thingiverse forrás: lapozós ("page=") lista beolvasás, ugyanazzal a Cloudflare-átjutással,
+    mint a Printables-nél.
+  - Importálva mező rekordonként: az URL.txt mentés jelöli meg vele az exportált sorokat,
+    hogy egy következő mentés már csak az újakat írja ki.
+  - URL.txt mentése gomb véglegesítve: a megnézett + érdekel + még nem importált rekordok
+    URL-jeit írja ki egy választott fájlba.
+  - Printables kép-letöltés javítva: a kártyák második <img>-jét kell venni, az első csak egy
+    örök blur-placeholder volt, emiatt korábban sosem sikerült képet letölteni.
+  - Cloudflare-ellenőrzés nyelvfüggetlen felismerése (nem csak angol "Just a moment" címet
+    ismer fel, hanem a tényleges lista-tartalom megjelenését nézi).
+  - Printables/Thingiverse Cloudflare-átjutás Patchright-tal, látható (de minimalizált)
+    böngészőablakban - ha a challenge esetleg nem oldódna fel magától, kézzel is átkattintható
+    ugyanabban az ablakban.
+  - Rekordlista: ID oszlop elsőként, csökkenő sorrendben.
+  - Részletes fázis-visszajelzés adatbetöltés közben (melyik modellnél, milyen lépésnél tart:
+    rekord készítése, kép másolása, kész).
+  - Információ gomb (ez az ablak) verzióval, változásnaplóval és súgóval.
+  - "Automatikus felismerés" eltávolítva a forrás-listából: nem volt mögötte funkció (nem
+    volt URL-mező, amiből felismerhetett volna bármit is) - mindig konkrét forrást kell
+    választani.
+  - Régi, adatbázisba ágyazott képek migrációja javítva: eddig a program a séma-frissítéskor
+    egyszerűen eldobta ezeket kép mentése nélkül, most tényleg fájlba menti őket.
+"""
+
+APP_DESCRIPTION = """\
+A 3DModelScope különböző 3D nyomtatható modelleket kínáló weboldalak (MakerWorld, Printables,
+Thingiverse, illetve tetszőleges további, egyedi beállítású forrás) listaoldalait olvassa be,
+és minden talált modellt egy helyi adatbázisba ment (cím, URL, előnézeti kép). Így egy helyen,
+kényelmesen át lehet nézni és válogatni a különböző oldalakon megjelent új modellek között,
+majd a kiválasztottak URL-jét egy szöveges fájlba exportálni további feldolgozásra.
+"""
+
+HELP_TEXT = """\
+ADATBETÖLTÉS (bal oldali panel)
+  1. Válaszd ki a forrást a legördülő listából (ha egy egyedi, konkrét URL-t akarsz beolvasni,
+     állítsd be a "Beállítások" fülön az "Egyéb" profil Lista URL-jét erre az URL-re).
+  2. Állítsd be, hány órára visszamenőleg keress (ez csak tájékoztató javaslat, nem szűr - a
+     duplikátumokat az teszi ki, hogy egy URL már szerepel-e az adatbázisban).
+  3. Opcionálisan add meg a maximális darabszámot, ha nem szeretnéd a teljes listát bejárni.
+  4. Az "Adatbetöltés" gomb elindítja a beolvasást; a folyamat állapota (melyik modell, melyik
+     lépés: rekord készítése / kép másolása / kész) a folyamatablakban és a státusz-sorban is
+     látszik. "Megszakítás"-kor választhatsz, hogy az addig mentett új rekordokat megtartod
+     vagy törlöd.
+
+CLOUDFLARE-VÉDETT FORRÁSOK (Printables, Thingiverse)
+  Ezek az oldalak Cloudflare "biztonsági ellenőrzést" mutathatnak. A program ilyenkor egy
+  látható, de minimalizált böngészőablakot nyit - a legtöbbször ez magától, pár másodperc
+  alatt lezajlik. Ha mégsem, állítsd vissza az ablakot a tálcáról, és kattints át rajta te
+  magad; utána a program automatikusan folytatja a beolvasást.
+
+REKORDOK FÜL
+  A "Rekordok betöltése" tölti be a listát (a Beállításokban megadott limittel lapozva, ha be
+  van állítva). A lista tetején szűrhetsz: "Megnézettek mutatása" és "Csak az érdekeltek".
+  Egy rekordra kattintva a jobb oldali panelen látod a részleteit és az előnézeti képét
+  (nagyítható/kicsinyíthető), valamint itt jelölheted:
+    - Megnézve - hogy már átnézted
+    - Érdekel / Nem érdekel - a döntésedet
+    - Importálva - ezt a program állítja be automatikusan, amikor az URL.txt mentésbe
+      belekerül a rekord; kézzel nem módosítható.
+  A "Kijelölt törlése" a listában kijelölt sor(oka)t törli, az "Elutasított rekordok törlése"
+  az összes megnézett+nem érdekel rekordot egyszerre.
+
+URL.TXT MENTÉSE
+  A megnézett és érdekel jelölésű, de még nem importált rekordok URL-jét menti ki egy
+  szöveges fájlba (soronként egy URL), majd ezeket a rekordokat importáltra jelöli, hogy egy
+  következő mentés már csak az újonnan érdekesnek jelölteket írja ki.
+
+JELÖLÉSEK TÖRLÉSE MINDEN REKORDNÁL
+  Nullázza minden rekordnál a Megnézve / Érdekel / Nem érdekel / Importálva jelölést - a
+  rekordok maguk, a képekkel együtt, megmaradnak.
+
+BEÁLLÍTÁSOK FÜL
+  Itt kezelhetők a forrásprofilok (név, kategória, lista URL, parser azonosító, lista mód,
+  aktív állapot, utolsó lekérdezés időpontja), illetve néhány általános beállítás (ismétlődés-
+  limit, lista/részletek panel aránya, rekordlista limit, ablak mérete - ez utóbbi kettő
+  automatikusan mentődik, ahogy állítod).
+"""
+
 
 def now_text() -> str:
     return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
 
+# Single-page fallback path (the "Egyéb" source, or any source not handled by one of the
+# dedicated list scrapers below): pulls a title and a preview image out of one HTML page
+# using only stdlib HTMLParser, so this path needs no browser at all.
 class PageParser(HTMLParser):
     def __init__(self) -> None:
         super().__init__(convert_charrefs=True)
@@ -83,6 +229,8 @@ class PageParser(HTMLParser):
             self.title_parts.append(data.strip())
 
 
+# parser_type is accepted for a future per-source parsing strategy but not used yet - every
+# source currently gets the same generic <title> + og:image/twitter:image extraction.
 def parse_source_page(raw_html: str, final_url: str, parser_type: str) -> tuple[str, str]:
     parser = PageParser()
     parser.feed(raw_html)
@@ -121,74 +269,148 @@ def download_image_data(url: str) -> bytes | None:
     return image_data
 
 
+def _parse_makerworld_time(value: str | None) -> datetime | None:
+    if not value:
+        return None
+    try:
+        return datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+
+
+def _extract_makerworld_category(url: str) -> str:
+    """Pulls a category slug (e.g. "900-3d-printer") out of a configured MakerWorld list URL
+    like .../3d-models/900-3d-printer, if the user pointed the source at one category instead
+    of the full "all models" listing. Empty string means "no category filter"."""
+    match = re.search(r"/3d-models/([\w-]+)", url)
+    return match.group(1) if match else ""
+
+
 def fetch_makerworld_listing(
     url: str,
+    hours: int,
     max_count: int | None = None,
-    unchanged_round_limit: int = 3,
     progress_callback: Callable[[int], None] | None = None,
     cancel_check: Callable[[], bool] | None = None,
+    status_callback: Callable[[str], None] | None = None,
 ) -> list[tuple[str, str, str]]:
-    """Loads MakerWorld's JavaScript page and returns unique model cards."""
+    """Fetches MakerWorld's newest-models results directly from its search JSON API - no
+    browser needed at all, this endpoint is plain, unauthenticated JSON - and stops as soon as
+    a result's own createTime falls outside the requested `hours` window.
+
+    MakerWorld's search backend caps "total" at 10000 regardless of how many models actually
+    match a query, so an undated "give me everything newer than X" scan could in principle
+    have to page through up to 10000 candidates just to find where the cutoff falls.
+    designCreateSince (whole days, counted from the API side, with a +1 day safety margin
+    here to avoid ever narrowing it TOO much) shrinks that server-side first; the exact
+    hour-level cutoff is still enforced client-side against each result's own createTime, so
+    designCreateSince only needs to be roughly right, never exact.
+    """
+    cutoff = datetime.now(timezone.utc) - timedelta(hours=hours)
+    since_days = max(1, math.ceil(hours / 24) + 1)
+    category = _extract_makerworld_category(url)
     models: dict[str, tuple[str, str, str]] = {}
-    with sync_playwright() as playwright:
-        # Use the installed Microsoft Edge to avoid bundling another browser in the EXE.
-        browser = playwright.chromium.launch(channel="msedge", headless=True)
-        context = browser.new_context(locale="en-US", user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/131 Safari/537.36")
-        page = context.new_page()
-        # The listing parser only needs card links, titles, and image URLs. Blocking
-        # rendered media prevents the long scrolling session from accumulating assets.
-        page.route(
-            "**/*",
-            lambda route: route.abort()
-            if route.request.resource_type in {"image", "media", "font"}
-            else route.continue_(),
+    limit = 100
+    offset = 0
+    while True:
+        if cancel_check and cancel_check():
+            break
+        query = urllib.parse.urlencode(
+            {
+                "orderBy": "newUploads",
+                "categories": category,
+                "designCreateSince": since_days,
+                "entrance": "list",
+                "designType": 0,
+                "limit": limit,
+                "offset": offset,
+            }
+        )
+        request = urllib.request.Request(
+            f"https://makerworld.com/api/v1/search-service/select/design2?{query}",
+            headers={"User-Agent": USER_AGENT, "Accept": "application/json"},
         )
         try:
-            page.goto(url, wait_until="domcontentloaded", timeout=45_000)
-            try:
-                page.get_by_role("button", name=re.compile(r"^Reject All$", re.IGNORECASE)).click(timeout=5_000)
-            except PlaywrightTimeoutError:
-                pass
-            page.wait_for_selector('a[href*="/models/"]', timeout=30_000)
-            previous_count = 0
-            no_growth_rounds = 0
-            for _ in range(20):
-                if cancel_check and cancel_check():
-                    break
-                cards = page.locator('a[href*="/models/"]')
-                for card in cards.all():
-                    href = card.get_attribute("href") or ""
-                    image = card.locator("img").first
-                    has_image = image.count() > 0
-                    image_url = ""
-                    if has_image:
-                        image_url = image.get_attribute("src") or image.get_attribute("data-src") or ""
-                        image_url = urllib.parse.urljoin(page.url, image_url)
-                    title = (image.get_attribute("alt") or "").strip() if has_image else card.inner_text().strip()
-                    if "/models/" not in href or not title:
-                        continue
-                    model_url = urllib.parse.urljoin(page.url, href)
-                    if model_url in models:
-                        continue
-                    models[model_url] = (model_url, title, image_url)
-                    if progress_callback:
-                        progress_callback(len(models))
-                    if max_count and len(models) >= max_count:
-                        return list(models.values())
-                if len(models) == previous_count:
-                    no_growth_rounds += 1
-                    if no_growth_rounds >= unchanged_round_limit:
-                        break
-                else:
-                    no_growth_rounds = 0
-                previous_count = len(models)
-                page.mouse.wheel(0, 15000)
-                page.wait_for_timeout(1800)
-        except PlaywrightTimeoutError as error:
+            with urllib.request.urlopen(request, timeout=20) as response:
+                data = json.loads(response.read())
+        except (OSError, ValueError) as error:
             raise ValueError("A MakerWorld lista nem töltődött be időben.") from error
-        finally:
-            browser.close()
+        hits = data.get("hits") or []
+        if not hits:
+            break
+        reached_cutoff = False
+        for hit in hits:
+            created_at = _parse_makerworld_time(hit.get("createTime"))
+            if created_at is None or created_at < cutoff:
+                reached_cutoff = True
+                break
+            model_id = hit.get("id")
+            if not model_id:
+                continue
+            slug = hit.get("slug") or ""
+            model_url = f"https://makerworld.com/en/models/{model_id}-{slug}" if slug else f"https://makerworld.com/en/models/{model_id}"
+            if model_url in models:
+                continue
+            title = hit.get("title") or hit.get("titleTranslated") or ""
+            image_url = hit.get("cover") or ""
+            # Stored alongside the record so the actual reason a scan stopped where it did
+            # stays visible later, not just implied by "created_at" (when *we* saved it).
+            model_created_at = created_at.astimezone().strftime("%Y-%m-%d %H:%M:%S")
+            models[model_url] = (model_url, title, image_url, model_created_at)
+            if progress_callback:
+                progress_callback(len(models))
+            if max_count and len(models) >= max_count:
+                return list(models.values())
+        if reached_cutoff:
+            break
+        offset += limit
+        total = data.get("total") or 0
+        if offset >= total:
+            break
+        if offset >= 10_000:
+            if status_callback:
+                status_callback(
+                    "A MakerWorld kereső 10 000 találat fölött nem ad több eredményt - "
+                    "néhány, az időablak szélén lévő tétel emiatt kimaradhatott."
+                )
+            break
     return list(models.values())
+
+
+def minimize_browser_window(context, page) -> None:
+    """Minimizes the visible automation window via the CDP Browser domain.
+
+    The --start-minimized launch arg looks like the natural way to do this, but Playwright
+    itself repositions/resizes the window right after launch (to its own default bounds),
+    which silently overrides the flag - the window always ends up "normal" regardless.
+    Asking Chrome DevTools Protocol directly to minimize, after the context already exists,
+    actually sticks. Best-effort: a failure here should never abort the scan itself.
+    """
+    try:
+        cdp_session = context.new_cdp_session(page)
+        window = cdp_session.send("Browser.getWindowForTarget")
+        cdp_session.send("Browser.setWindowBounds", {"windowId": window["windowId"], "bounds": {"windowState": "minimized"}})
+    except Exception:
+        pass
+
+
+def ensure_browser_profile_dir(new_dir: Path, legacy_dir: Path) -> Path:
+    """Resolves the persistent browser profile directory to actually launch with.
+
+    Prefers new_dir (under 3DSModelScope/browser_profiles). If it doesn't exist yet but an
+    older build's profile is sitting at legacy_dir, copies it over first so an already-solved
+    Cloudflare challenge isn't lost on upgrade. legacy_dir is left in place (copied, not
+    moved) so downgrading to an older build still finds its cookies there too. If neither
+    exists, new_dir is created fresh and Playwright starts a brand new profile in it.
+    """
+    if new_dir.exists() and any(new_dir.iterdir()):
+        return new_dir
+    if legacy_dir.exists() and any(legacy_dir.iterdir()):
+        new_dir.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copytree(legacy_dir, new_dir, dirs_exist_ok=True)
+        return new_dir
+    new_dir.mkdir(parents=True, exist_ok=True)
+    return new_dir
 
 
 def wait_out_cloudflare_challenge(
@@ -261,7 +483,7 @@ def fetch_printables_listing(
     leaks - usually clears it on its own within seconds. If it doesn't, the window stays open
     and interactive, so the user can just click through it there like a normal browser tab."""
     models: dict[str, tuple[str, str, str]] = {}
-    PRINTABLES_PROFILE_DIR.mkdir(parents=True, exist_ok=True)
+    profile_dir = ensure_browser_profile_dir(PRINTABLES_PROFILE_DIR, LEGACY_PRINTABLES_PROFILE_DIR)
     with sync_patchright() as playwright:
         # A persistent profile keeps cookies (incl. Cloudflare's clearance cookie) between runs,
         # so a challenge passed once usually doesn't need to be passed again for a while.
@@ -269,14 +491,14 @@ def fetch_printables_listing(
         # UA string and the real installed Edge's actual version is itself a bot signal, and
         # testing found the plain, unmodified profile clears the challenge more reliably.
         context = playwright.chromium.launch_persistent_context(
-            str(PRINTABLES_PROFILE_DIR),
+            str(profile_dir),
             channel="msedge",
             headless=False,
-            # Still a real, visible window (required to pass Cloudflare) - just starts
-            # minimized so it doesn't steal focus or clutter the screen during a normal run.
-            args=["--start-minimized"],
         )
         page = context.pages[0] if context.pages else context.new_page()
+        # Still a real, visible window (required to pass Cloudflare) - just minimized so it
+        # doesn't steal focus or clutter the screen during a normal run.
+        minimize_browser_window(context, page)
         try:
             page.goto(url, wait_until="domcontentloaded", timeout=45_000)
             if status_callback:
@@ -316,7 +538,9 @@ def fetch_printables_listing(
                     model_url = urllib.parse.urljoin(page.url, href).split("?")[0]
                     if model_url in models:
                         continue
-                    models[model_url] = (model_url, title, image_url)
+                    # Printables' card grid doesn't expose a per-model creation timestamp the
+                    # way MakerWorld's search API does, so this stays blank here.
+                    models[model_url] = (model_url, title, image_url, "")
                     if progress_callback:
                         progress_callback(len(models))
                     if max_count and len(models) >= max_count:
@@ -364,18 +588,18 @@ def fetch_thingiverse_listing(
     of scrolling - but it sits behind the same kind of Cloudflare managed challenge, so it
     reuses the same headed-Patchright approach as Printables."""
     models: dict[str, tuple[str, str, str]] = {}
-    THINGIVERSE_PROFILE_DIR.mkdir(parents=True, exist_ok=True)
+    profile_dir = ensure_browser_profile_dir(THINGIVERSE_PROFILE_DIR, LEGACY_THINGIVERSE_PROFILE_DIR)
     start_page = int(urllib.parse.parse_qs(urllib.parse.urlsplit(url).query).get("page", ["1"])[0] or "1")
     with sync_patchright() as playwright:
         context = playwright.chromium.launch_persistent_context(
-            str(THINGIVERSE_PROFILE_DIR),
+            str(profile_dir),
             channel="msedge",
             headless=False,
-            # Still a real, visible window (required to pass Cloudflare) - just starts
-            # minimized so it doesn't steal focus or clutter the screen during a normal run.
-            args=["--start-minimized"],
         )
         page = context.pages[0] if context.pages else context.new_page()
+        # Still a real, visible window (required to pass Cloudflare) - just minimized so it
+        # doesn't steal focus or clutter the screen during a normal run.
+        minimize_browser_window(context, page)
         try:
             no_growth_rounds = 0
             page_number = start_page
@@ -414,7 +638,9 @@ def fetch_thingiverse_listing(
                     image_url = image.get_attribute("src") or "" if image.count() > 0 else ""
                     if image_url:
                         image_url = urllib.parse.urljoin(page.url, image_url)
-                    models[model_url] = (model_url, title, image_url)
+                    # Thingiverse's search card doesn't expose a per-model creation timestamp,
+                    # unlike MakerWorld's search API, so this stays blank here.
+                    models[model_url] = (model_url, title, image_url, "")
                     if progress_callback:
                         progress_callback(len(models))
                     if max_count and len(models) >= max_count:
@@ -440,7 +666,10 @@ def fetch_thingiverse_listing(
 
 class Database:
     def __init__(self, path: Path) -> None:
-        self.image_dir = path.resolve().parent / "3DScopImages"
+        # Images live next to the database, under the same consolidated data directory
+        # (path's parent - e.g. 3DSModelScope/Images alongside 3DSModelScope/3DModelScope.db).
+        self.image_dir = path.resolve().parent / "Images"
+        path.resolve().parent.mkdir(parents=True, exist_ok=True)
         self.connection = sqlite3.connect(path, check_same_thread=False)
         self.connection.row_factory = sqlite3.Row
         self.connection.execute(
@@ -483,6 +712,16 @@ class Database:
             self.connection.execute("ALTER TABLE records ADD COLUMN image_path TEXT NOT NULL DEFAULT ''")
         if "source_id" not in columns:
             self.connection.execute("ALTER TABLE records ADD COLUMN source_id INTEGER")
+        if "imported" not in columns:
+            self.connection.execute("ALTER TABLE records ADD COLUMN imported INTEGER NOT NULL DEFAULT 0")
+        if "model_created_at" not in columns:
+            self.connection.execute("ALTER TABLE records ADD COLUMN model_created_at TEXT NOT NULL DEFAULT ''")
+        # Backfills "Létrehozva" for records saved before it was switched to show the model's
+        # own web page date instead of the moment we happened to save it - idempotent, so it
+        # only ever touches a row once (harmless no-op every startup after that).
+        self.connection.execute(
+            "UPDATE records SET created_at=model_created_at WHERE model_created_at != '' AND created_at != model_created_at"
+        )
         self.image_dir.mkdir(parents=True, exist_ok=True)
         if "image_data" in columns:
             self.migrate_image_blobs()
@@ -585,25 +824,21 @@ class Database:
         self.connection.execute("DELETE FROM sources WHERE id=?", (source_id,))
         self.connection.commit()
 
-    def source_for_url(self, url: str) -> sqlite3.Row:
-        hostname = (urllib.parse.urlparse(url).hostname or "").lower()
-        candidates = []
-        for source in self.sources():
-            source_hostname = (urllib.parse.urlparse(source["base_url"]).hostname or "").lower()
-            if source_hostname and (hostname == source_hostname or hostname.endswith(f".{source_hostname}")):
-                candidates.append(source)
-        if candidates:
-            return max(candidates, key=lambda source: len(source["base_url"]))
-        return next(source for source in self.sources() if source["name"] == "Egyéb")
-
-    def add(self, url: str, title: str, image_url: str, source_id: int) -> int:
+    def add(self, url: str, title: str, image_url: str, source_id: int, model_created_at: str = "") -> int:
+        # "Létrehozva" is the model's own creation date on the source site when we have one
+        # (MakerWorld) - only sources with no such date available fall back to "when we saved
+        # it" (now), since that's the closest information we actually have for those.
+        created_at = model_created_at or now_text()
         cursor = self.connection.execute(
-            "INSERT INTO records (url, title, image_url, image_path, source_id, created_at) VALUES (?, ?, ?, '', ?, ?)",
-            (url, title, image_url, source_id, now_text()),
+            "INSERT INTO records (url, title, image_url, image_path, source_id, created_at, model_created_at) VALUES (?, ?, ?, '', ?, ?, ?)",
+            (url, title, image_url, source_id, created_at, model_created_at),
         )
         self.connection.commit()
         return int(cursor.lastrowid)
 
+    # Detects the real format from the image bytes (not the source URL's extension, which is
+    # frequently wrong for resize-proxy URLs) so the saved file gets a correct suffix - just
+    # normalizes Pillow's "JPEG" to the conventional ".jpg".
     @staticmethod
     def image_extension(image_data: bytes) -> str:
         with Image.open(BytesIO(image_data)) as image:
@@ -619,11 +854,22 @@ class Database:
         self.connection.commit()
         return str((self.image_dir / filename).resolve())
 
+    # One-time migration from the old blob-in-the-database schema to today's file-based
+    # storage: writes each legacy image_data blob out to a file via save_image (skipping rows
+    # that somehow already have an image_path, so a good file never gets clobbered by a stale
+    # blob), then always clears the blob column so the caller's DROP COLUMN has nothing left
+    # to lose. A blob that fails to decode as an image is dropped rather than raising, same as
+    # every other image download in this file.
     def migrate_image_blobs(self) -> None:
         legacy_rows = self.connection.execute(
             "SELECT id, image_data, image_path FROM records WHERE length(image_data) > 0"
         ).fetchall()
         for row in legacy_rows:
+            if not row["image_path"]:
+                try:
+                    self.save_image(row["id"], bytes(row["image_data"]))
+                except (OSError, ValueError):
+                    pass
             self.connection.execute("UPDATE records SET image_data=X'' WHERE id=?", (row["id"],))
         if legacy_rows:
             self.connection.commit()
@@ -657,7 +903,7 @@ class Database:
         include_viewed: bool = True,
         only_interested: bool = False,
     ) -> list[sqlite3.Row]:
-        query = "SELECT records.id, records.url, records.title, records.image_url, records.image_path, records.source_id, records.created_at, records.viewed, records.interested, records.not_interested, records.viewed_at, records.marked_at, sources.name AS source_name FROM records LEFT JOIN sources ON sources.id=records.source_id"
+        query = "SELECT records.id, records.url, records.title, records.image_url, records.image_path, records.source_id, records.created_at, records.model_created_at, records.viewed, records.interested, records.not_interested, records.imported, records.viewed_at, records.marked_at, sources.name AS source_name FROM records LEFT JOIN sources ON sources.id=records.source_id"
         conditions = []
         parameters: list[int] = []
         if not include_viewed:
@@ -705,13 +951,28 @@ class Database:
         self.connection.commit()
         return cursor.rowcount
 
-    # Resets the viewed/interested/not_interested flags on every record.
+    # Resets the viewed/interested/not_interested/imported flags on every record.
     def clear_all_flags(self) -> int:
         cursor = self.connection.execute(
-            "UPDATE records SET viewed=0, interested=0, not_interested=0, viewed_at=NULL, marked_at=NULL"
+            "UPDATE records SET viewed=0, interested=0, not_interested=0, imported=0, viewed_at=NULL, marked_at=NULL"
         )
         self.connection.commit()
         return cursor.rowcount
+
+    # Records that are ready to hand off to URL.txt: watched, marked interested, and not
+    # already exported in an earlier URL.txt save.
+    def pending_import(self) -> list[sqlite3.Row]:
+        return list(
+            self.connection.execute(
+                "SELECT id, url FROM records WHERE viewed=1 AND interested=1 AND imported=0 ORDER BY id"
+            )
+        )
+
+    def mark_imported(self, record_ids: list[int]) -> None:
+        self.connection.executemany(
+            "UPDATE records SET imported=1 WHERE id=?", [(record_id,) for record_id in record_ids]
+        )
+        self.connection.commit()
 
 
 class ToolTip:
@@ -770,7 +1031,7 @@ class App(tk.Tk):
         self.startup_window.update_idletasks()
         self.startup_window.deiconify()
         self.update()
-        self.title("3DModelScope")
+        self.title(f"3DModelScope {APP_VERSION}")
         self.minsize(820, 560)
         self.update_startup_status("Adatbázis megnyitása...")
         self.database = Database(DB_PATH)
@@ -814,7 +1075,8 @@ class App(tk.Tk):
             self.load_window.deiconify()
             self.load_window.lift()
             return
-        self.load_window = tk.Toplevel(self)
+        colors = getattr(self, "current_theme", THEMES["light"])
+        self.load_window = tk.Toplevel(self, background=colors["bg"])
         self.load_window.title("Adatbetöltés folyamatban")
         self.load_window.geometry("420x190")
         self.load_window.resizable(False, False)
@@ -870,12 +1132,151 @@ class App(tk.Tk):
         self.database.set_setting("window_geometry", geometry)
         self.window_size_var.set(geometry)
 
+    # Persists id/source/title column widths whenever they actually changed (cheap to check,
+    # so it's fine that this fires on every click in the list, not just header drags - see
+    # the bind comment where this is attached).
+    def save_column_widths(self, _event: object | None = None) -> None:
+        for column in self.persisted_columns:
+            width = self.record_tree.column(column, "width")
+            if str(width) != self.column_width_vars[column].get():
+                self.database.set_setting(f"column_width_{column}", str(width))
+                self.column_width_vars[column].set(str(width))
+
+    # Mirrors a typed value from the Beállítások entry back onto the list: partial/invalid
+    # input while typing (empty, non-numeric, zero or negative) is simply ignored rather than
+    # rejected with a warning, since trace_add fires on every keystroke.
+    def apply_column_width_setting(self, column: str) -> None:
+        try:
+            width = int(self.column_width_vars[column].get().strip())
+        except ValueError:
+            return
+        if width <= 0:
+            return
+        self.record_tree.column(column, width=width)
+        self.database.set_setting(f"column_width_{column}", str(width))
+
+    # Reads the combobox, persists the choice, and re-applies immediately - so switching
+    # themes takes effect on the spot rather than needing a restart.
+    def on_theme_selected(self, _event: object | None = None) -> None:
+        key = next((k for k, label in THEME_LABELS.items() if label == self.theme_var.get()), "light")
+        self.database.set_setting("theme", key)
+        self.apply_theme(key)
+
+    # Recolors every ttk widget class via a shared Style (forced onto the 'clam' base theme,
+    # since Windows' native ttk themes largely ignore custom colors) plus the handful of plain
+    # Tk widgets that don't go through ttk styling at all (the root window and the list/details
+    # divider). Safe to call anytime, including at startup, to apply the saved choice.
+    def apply_theme(self, theme_key: str) -> None:
+        colors = THEMES.get(theme_key, THEMES["light"])
+        self.current_theme = colors
+        # Bevel edges derived from each surface's own background: a "raised" relief paints
+        # lightcolor on the top/left edge and darkcolor on the bottom/right edge, giving the
+        # classic protruding-panel look instead of the flat, too-light default border 'clam'
+        # falls back to when no bordercolor/lightcolor/darkcolor is configured at all.
+        panel_light = shade_color(colors["bg"], 0.16)
+        panel_dark = shade_color(colors["bg"], -0.28)
+        field_light = shade_color(colors["entry_bg"], -0.28)
+        field_dark = shade_color(colors["entry_bg"], 0.16)
+        style = ttk.Style(self)
+        style.theme_use("clam")
+        style.configure(".", background=colors["bg"], foreground=colors["fg"], fieldbackground=colors["entry_bg"])
+        for widget_class in ("TFrame", "TLabelframe", "TLabel", "TCheckbutton", "TButton", "TNotebook"):
+            style.configure(widget_class, background=colors["bg"], foreground=colors["fg"])
+        # Raised bevel on every group-box panel (Adatbetöltés, Rekord adatai, the Beállítások
+        # forms): lighter top/left, darker bottom/right, so it visibly stands out from the
+        # window background instead of blending into it or (as before) showing a mismatched
+        # bright edge on dark themes.
+        style.configure(
+            "TLabelframe",
+            bordercolor=colors["border"],
+            lightcolor=panel_light,
+            darkcolor=panel_dark,
+            relief="raised",
+            borderwidth=2,
+        )
+        style.configure("TLabelframe.Label", background=colors["bg"], foreground=colors["fg"])
+        # Entries/combos get the opposite (sunken) bevel - the conventional "recessed input
+        # field" look - using shades of the field's own background rather than the panel's.
+        style.configure(
+            "TEntry",
+            fieldbackground=colors["entry_bg"],
+            foreground=colors["entry_fg"],
+            insertcolor=colors["fg"],
+            bordercolor=colors["border"],
+            lightcolor=field_light,
+            darkcolor=field_dark,
+            relief="sunken",
+        )
+        style.configure(
+            "TCombobox",
+            fieldbackground=colors["entry_bg"],
+            foreground=colors["entry_fg"],
+            bordercolor=colors["border"],
+            lightcolor=field_light,
+            darkcolor=field_dark,
+        )
+        style.map(
+            "TCombobox",
+            fieldbackground=[("readonly", colors["entry_bg"])],
+            foreground=[("readonly", colors["entry_fg"])],
+        )
+        self.option_add("*TCombobox*Listbox.background", colors["entry_bg"])
+        self.option_add("*TCombobox*Listbox.foreground", colors["entry_fg"])
+        self.option_add("*TCombobox*Listbox.selectBackground", colors["select_bg"])
+        self.option_add("*TCombobox*Listbox.selectForeground", colors["select_fg"])
+        style.map("TButton", background=[("active", colors["select_bg"])], foreground=[("active", colors["select_fg"])])
+        style.configure(
+            "TButton", bordercolor=colors["border"], lightcolor=panel_light, darkcolor=panel_dark, relief="raised"
+        )
+        # 'clam' otherwise leaves the Notebook's own border/tab-row edge at its built-in
+        # (light) default regardless of every other color set above - explicit bordercolor
+        # here is what actually gets rid of the bright line around the content area.
+        style.configure("TNotebook", bordercolor=colors["border"])
+        style.configure("TNotebook.Tab", background=colors["bg"], foreground=colors["fg"], bordercolor=colors["border"])
+        style.map(
+            "TNotebook.Tab",
+            background=[("selected", colors["select_bg"])],
+            foreground=[("selected", colors["select_fg"])],
+        )
+        style.configure(
+            "Treeview",
+            background=colors["tree_bg"],
+            foreground=colors["tree_fg"],
+            fieldbackground=colors["tree_bg"],
+            bordercolor=colors["border"],
+            lightcolor=field_light,
+            darkcolor=field_dark,
+        )
+        style.map(
+            "Treeview",
+            background=[("selected", colors["select_bg"])],
+            foreground=[("selected", colors["select_fg"])],
+        )
+        style.configure("Treeview.Heading", background=colors["heading_bg"], foreground=colors["fg"])
+        for scrollbar_style in ("TScrollbar", "Vertical.TScrollbar", "Horizontal.TScrollbar"):
+            style.configure(
+                scrollbar_style,
+                background=colors["bg"],
+                troughcolor=colors["entry_bg"],
+                arrowcolor=colors["fg"],
+                bordercolor=colors["border"],
+                lightcolor=panel_light,
+                darkcolor=panel_dark,
+            )
+        style.configure("TSeparator", background=colors["border"])
+        self.configure(background=colors["bg"])
+        if hasattr(self, "work_paned"):
+            self.work_paned.configure(bg=colors["border"])
+
     def build_ui(self) -> None:
         self.columnconfigure(1, weight=1)
         self.rowconfigure(0, weight=0)
         self.rowconfigure(1, weight=1)
         header = ttk.Frame(self, padding=(14, 5, 14, 5))
-        header.grid(row=0, column=0, sticky="ew")
+        # Spans both columns: with only column 0, the row-0/column-1 cell above the notebook
+        # was left completely uncovered, showing the raw (unstyled) root window background
+        # through as a bright strip along the top of the content area.
+        header.grid(row=0, column=0, columnspan=2, sticky="ew")
         header.columnconfigure(0, weight=1)
         ttk.Label(header, text="3DModelScope", font=("Segoe UI", 17, "bold")).grid(row=0, column=0, sticky="w")
 
@@ -889,9 +1290,12 @@ class App(tk.Tk):
         self.max_count_var = tk.StringVar()
         self.unchanged_round_limit_var = tk.StringVar(value="3")
         ttk.Label(input_frame, text="Forrás").grid(row=0, column=0, sticky="w", pady=(0, 3))
-        # The selected source controls which parser profile processes the URL.
-        self.source_var = tk.StringVar(value="Automatikus felismerés")
-        source_names = ["Automatikus felismerés"] + [source["name"] for source in self.source_profiles]
+        # The selected source controls which parser profile processes the URL. No
+        # "auto-detect" option: there is no free-form URL field to detect from - every source
+        # has its own fixed list URL configured on the Beállítások tab, so the user always
+        # picks a concrete source here.
+        source_names = [source["name"] for source in self.source_profiles]
+        self.source_var = tk.StringVar(value=source_names[0] if source_names else "")
         self.source_ids = {source["name"]: source["id"] for source in self.source_profiles}
         self.source_combo = ttk.Combobox(input_frame, textvariable=self.source_var, values=source_names, state="readonly", width=1)
         self.source_combo.grid(row=1, column=0, sticky="ew", pady=(0, 8))
@@ -922,6 +1326,7 @@ class App(tk.Tk):
         ttk.Button(input_frame, text="Elutasított rekordok törlése", command=self.delete_viewed_not_interested).grid(row=13, column=0, sticky="ew", pady=(8, 0))
         ttk.Button(input_frame, text="Jelölések törlése minden rekordnál", command=self.clear_all_flags).grid(row=14, column=0, sticky="ew", pady=(8, 0))
         ttk.Button(input_frame, text="URL.txt mentése", command=self.save_url_txt).grid(row=15, column=0, sticky="ew", pady=(8, 0))
+        ttk.Button(input_frame, text="Információ", command=self.show_info_dialog).grid(row=16, column=0, sticky="ew", pady=(8, 0))
 
         content = ttk.Frame(self, padding=(7, 0, 14, 14))
         content.grid(row=0, column=1, rowspan=2, sticky="nsew")
@@ -969,7 +1374,7 @@ class App(tk.Tk):
         list_tab.rowconfigure(0, weight=1)
         self.record_tree = ttk.Treeview(
             list_tab,
-            columns=("id", "source", "title", "url", "image_url", "created", "viewed", "interest"),
+            columns=("id", "source", "title", "url", "image_url", "created", "viewed", "interest", "imported"),
             show="headings",
             selectmode="extended",
         )
@@ -982,11 +1387,23 @@ class App(tk.Tk):
             "created": "Létrehozva",
             "viewed": "Megnézve",
             "interest": "Érdekel",
+            "imported": "Importálva",
         }
-        widths = {"id": 60, "source": 105, "title": 240, "url": 300, "image_url": 300, "created": 145, "viewed": 85, "interest": 85}
+        widths = {"id": 60, "source": 105, "title": 240, "url": 300, "image_url": 300, "created": 145, "viewed": 85, "interest": 85, "imported": 85}
+        # id/source/title widths are user-resizable and persisted (see save_column_widths);
+        # the rest keep their fixed defaults.
+        self.persisted_columns = ("id", "source", "title")
+        for column in self.persisted_columns:
+            widths[column] = int(self.database.get_setting(f"column_width_{column}", str(widths[column])))
+        self.column_width_vars = {column: tk.StringVar(value=str(widths[column])) for column in self.persisted_columns}
         for column in headings:
             self.record_tree.heading(column, text=headings[column])
-            self.record_tree.column(column, width=widths[column], anchor="w")
+            # stretch=False is the actual fix: ttk.Treeview's default (stretch=True) keeps
+            # every column's total width pinned to the visible area, so widening one column
+            # squeezes all the others to compensate. With stretch off per column, resizing one
+            # column only changes that column - the horizontal scrollbar (below) picks up the
+            # slack instead of the other columns collapsing.
+            self.record_tree.column(column, width=widths[column], anchor="w", stretch=False)
         self.record_tree.grid(row=0, column=0, sticky="nsew")
         list_scrollbar = ttk.Scrollbar(list_tab, orient="vertical", command=self.record_tree.yview)
         list_scrollbar.grid(row=0, column=1, sticky="ns")
@@ -995,6 +1412,9 @@ class App(tk.Tk):
         list_horizontal_scrollbar.grid(row=1, column=0, sticky="ew")
         self.record_tree.configure(xscrollcommand=list_horizontal_scrollbar.set)
         self.record_tree.bind("<<TreeviewSelect>>", self.on_tree_select)
+        # There is no dedicated "column resized" event on ttk.Treeview - a header drag also
+        # ends with a button release over the tree, so this doubles as the save trigger.
+        self.record_tree.bind("<ButtonRelease-1>", self.save_column_widths, add="+")
         self.work_paned.add(list_tab, minsize=220)
         detail_tab = ttk.Frame(self.work_paned, padding=12)
         detail_tab.columnconfigure(0, weight=1)
@@ -1037,9 +1457,12 @@ class App(tk.Tk):
         self.viewed_var = tk.BooleanVar()
         self.interested_var = tk.BooleanVar()
         self.not_interested_var = tk.BooleanVar()
+        self.imported_var = tk.BooleanVar()
         ttk.Checkbutton(flags, text="Megnézve", variable=self.viewed_var, command=self.save_flags).pack(side="left", padx=(0, 12))
         ttk.Checkbutton(flags, text="Érdekel", variable=self.interested_var, command=lambda: self.save_flags(auto_advance=True)).pack(side="left", padx=(0, 12))
-        ttk.Checkbutton(flags, text="Nem érdekel", variable=self.not_interested_var, command=lambda: self.save_flags(auto_advance=True)).pack(side="left")
+        ttk.Checkbutton(flags, text="Nem érdekel", variable=self.not_interested_var, command=lambda: self.save_flags(auto_advance=True)).pack(side="left", padx=(0, 12))
+        # Read-only: imported is set automatically by the URL.txt export, not by hand.
+        ttk.Checkbutton(flags, text="Importálva", variable=self.imported_var, state="disabled").pack(side="left")
         navigation = ttk.Frame(detail_tab)
         navigation.grid(row=2, column=0, sticky="ew", pady=(12, 0))
         navigation.columnconfigure((0, 1), weight=1)
@@ -1060,7 +1483,10 @@ class App(tk.Tk):
         general_settings_form.grid(row=0, column=0, sticky="ew", pady=(0, 10))
         general_settings_form.columnconfigure(1, weight=1)
         ttk.Label(general_settings_form, text="Egymás utáni azonos rekordok száma").grid(row=0, column=0, sticky="w", padx=(0, 8), pady=3)
-        ttk.Entry(general_settings_form, textvariable=self.unchanged_round_limit_var, width=10).grid(row=0, column=1, sticky="w", pady=3)
+        unchanged_round_limit_row = ttk.Frame(general_settings_form)
+        unchanged_round_limit_row.grid(row=0, column=1, sticky="w", pady=3)
+        ttk.Entry(unchanged_round_limit_row, textvariable=self.unchanged_round_limit_var, width=10).pack(side="left")
+        ttk.Label(unchanged_round_limit_row, text="db").pack(side="left", padx=(4, 0))
         ttk.Label(general_settings_form, text="Lista/Részletek panel arány").grid(row=1, column=0, sticky="w", padx=(0, 8), pady=3)
         self.pane_ratio_var = tk.StringVar(value=f"{self.list_pane_ratio * 100:.0f}%")
         ttk.Label(general_settings_form, textvariable=self.pane_ratio_var).grid(row=1, column=1, sticky="w", pady=3)
@@ -1069,9 +1495,31 @@ class App(tk.Tk):
         self.record_list_limit_var.trace_add(
             "write", lambda *_args: self.database.set_setting("record_list_limit", self.record_list_limit_var.get().strip())
         )
-        ttk.Entry(general_settings_form, textvariable=self.record_list_limit_var, width=10).grid(row=2, column=1, sticky="w", pady=3)
+        record_list_limit_row = ttk.Frame(general_settings_form)
+        record_list_limit_row.grid(row=2, column=1, sticky="w", pady=3)
+        ttk.Entry(record_list_limit_row, textvariable=self.record_list_limit_var, width=10).pack(side="left")
+        ttk.Label(record_list_limit_row, text="db").pack(side="left", padx=(4, 0))
         ttk.Label(general_settings_form, text="Ablak mérete").grid(row=3, column=0, sticky="w", padx=(0, 8), pady=3)
         ttk.Label(general_settings_form, textvariable=self.window_size_var).grid(row=3, column=1, sticky="w", pady=3)
+        column_width_labels = {"id": "ID oszlop szélessége", "source": "Forrás oszlop szélessége", "title": "Cím oszlop szélessége"}
+        for offset, column in enumerate(self.persisted_columns):
+            row = 4 + offset
+            ttk.Label(general_settings_form, text=column_width_labels[column]).grid(row=row, column=0, sticky="w", padx=(0, 8), pady=3)
+            self.column_width_vars[column].trace_add(
+                "write", lambda *_args, column=column: self.apply_column_width_setting(column)
+            )
+            column_width_row = ttk.Frame(general_settings_form)
+            column_width_row.grid(row=row, column=1, sticky="w", pady=3)
+            ttk.Entry(column_width_row, textvariable=self.column_width_vars[column], width=10).pack(side="left")
+            ttk.Label(column_width_row, text="px").pack(side="left", padx=(4, 0))
+        theme_row = 4 + len(self.persisted_columns)
+        ttk.Label(general_settings_form, text="Kinézet").grid(row=theme_row, column=0, sticky="w", padx=(0, 8), pady=3)
+        self.theme_var = tk.StringVar(value=THEME_LABELS.get(self.database.get_setting("theme", "light"), THEME_LABELS["light"]))
+        theme_combo = ttk.Combobox(
+            general_settings_form, textvariable=self.theme_var, values=list(THEME_LABELS.values()), state="readonly", width=14
+        )
+        theme_combo.grid(row=theme_row, column=1, sticky="w", pady=3)
+        theme_combo.bind("<<ComboboxSelected>>", self.on_theme_selected)
         settings_form = ttk.LabelFrame(settings_tab, text="Forrásprofil beállításai", padding=10)
         settings_form.grid(row=1, column=0, sticky="ew", pady=(0, 10))
         settings_form.columnconfigure(1, weight=1)
@@ -1140,16 +1588,17 @@ class App(tk.Tk):
         self.refresh_source_settings()
         self.update_last_run_info()
         self.view_notebook.add(settings_tab, text="Beállítások")
+        self.apply_theme(self.database.get_setting("theme", "light"))
 
     # Reloads the settings table and the active-source dropdown after every change.
     def refresh_source_settings(self) -> None:
         all_sources = self.database.all_sources()
         self.source_profiles = [source for source in all_sources if source["active"]]
         self.source_ids = {source["name"]: source["id"] for source in self.source_profiles}
-        source_names = ["Automatikus felismerés"] + [source["name"] for source in self.source_profiles]
+        source_names = [source["name"] for source in self.source_profiles]
         self.source_combo.configure(values=source_names)
         if self.source_var.get() not in source_names:
-            self.source_var.set("Automatikus felismerés")
+            self.source_var.set(source_names[0] if source_names else "")
         for item_id in self.settings_tree.get_children():
             self.settings_tree.delete(item_id)
         for source in all_sources:
@@ -1279,7 +1728,7 @@ class App(tk.Tk):
                 "",
                 "end",
                 iid=str(record["id"]),
-                values=(record["id"], record["source_name"] or "Egyéb", record["title"], record["url"], image_path or "Nincs letöltött kép", record["created_at"], "Igen" if record["viewed"] else "Nem", interest),
+                values=(record["id"], record["source_name"] or "Egyéb", record["title"], record["url"], image_path or "Nincs letöltött kép", record["created_at"], "Igen" if record["viewed"] else "Nem", interest, "Igen" if record["imported"] else "Nem"),
             )
             if position % 50 == 0 and self.startup_window.winfo_exists():
                 self.update_startup_status(f"Rekordlista felépítése: {position}/{len(self.records)}")
@@ -1384,6 +1833,7 @@ class App(tk.Tk):
         self.viewed_var.set(bool(record["viewed"]))
         self.interested_var.set(bool(record["interested"]))
         self.not_interested_var.set(bool(record["not_interested"]))
+        self.imported_var.set(bool(record["imported"]))
         self.position_var.set(f"{self.index + 1} / {len(self.records)}")
         self.previous_button.configure(state="normal" if self.index > 0 else "disabled")
         self.next_button.configure(state="normal" if self.index < len(self.records) - 1 else "disabled")
@@ -1524,13 +1974,16 @@ class App(tk.Tk):
             self.database.set_source_last_fetched(source["id"], now_text())
             self.after(0, self.update_last_run_info)
             if source["parser_type"] == "makerworld":
-                # MakerWorld is a JavaScript/Cloudflare page, so read model cards in a real browser.
+                # MakerWorld's own search JSON API is used directly (see fetch_makerworld_listing's
+                # docstring) - no browser needed, and it stops as soon as it finds a model older
+                # than `hours`, rather than needing a fixed max_count to ever stop at all.
                 models = fetch_makerworld_listing(
                     url,
+                    hours,
                     max_count,
-                    unchanged_round_limit,
                     lambda count: self.report_progress(count, "Modellek felderítve"),
                     cancel_check=self.cancel_event.is_set,
+                    status_callback=self.report_status,
                 )
                 self.after(0, lambda: self.progress_bar.stop())
                 self.after(0, lambda: self.progress_bar.configure(mode="determinate", maximum=max(len(models), 1), value=0))
@@ -1539,7 +1992,7 @@ class App(tk.Tk):
                 cancelled = False
                 asked_continue = False
                 total_models = len(models)
-                for position, (model_url, title, image_url) in enumerate(models, start=1):
+                for position, (model_url, title, image_url, model_created_at) in enumerate(models, start=1):
                     if self.cancel_event.is_set():
                         cancelled = True
                         break
@@ -1556,7 +2009,7 @@ class App(tk.Tk):
                         continue
                     consecutive_existing = 0
                     self.report_phase(position, total_models, title, "rekord készítése")
-                    record_id = self.database.add(model_url, title, image_url, source["id"])
+                    record_id = self.database.add(model_url, title, image_url, source["id"], model_created_at)
                     self.current_run_record_ids.append(record_id)
                     if image_url:
                         self.report_phase(position, total_models, title, "kép másolása")
@@ -1575,8 +2028,9 @@ class App(tk.Tk):
                 self.after(0, lambda: self.add_finished(added_count, len(models), cancelled=cancelled))
                 return
             if source["parser_type"] == "printables":
-                # Printables is its own separate flow: same parameters as MakerWorld, but with
-                # a Cloudflare interstitial that sometimes needs a short wait before the listing loads.
+                # Printables sits behind a Cloudflare managed challenge (see
+                # fetch_printables_listing's own docstring for how that's handled); once past
+                # it, gathering the listing works the same way as MakerWorld's.
                 models = fetch_printables_listing(
                     url,
                     max_count,
@@ -1591,13 +2045,14 @@ class App(tk.Tk):
                 consecutive_existing = 0
                 cancelled = False
                 asked_continue = False
-                for position, (model_url, title, image_url) in enumerate(models, start=1):
+                total_models = len(models)
+                for position, (model_url, title, image_url, model_created_at) in enumerate(models, start=1):
                     if self.cancel_event.is_set():
                         cancelled = True
                         break
                     if self.database.record_exists(model_url):
                         consecutive_existing += 1
-                        self.report_progress(position, "Modellek mentése")
+                        self.report_phase(position, total_models, title, "már megvan, kihagyva")
                         if consecutive_existing >= unchanged_round_limit and not asked_continue:
                             asked_continue = True
                             remaining = len(models) - position
@@ -1607,9 +2062,11 @@ class App(tk.Tk):
                             consecutive_existing = 0
                         continue
                     consecutive_existing = 0
-                    record_id = self.database.add(model_url, title, image_url, source["id"])
+                    self.report_phase(position, total_models, title, "rekord készítése")
+                    record_id = self.database.add(model_url, title, image_url, source["id"], model_created_at)
                     self.current_run_record_ids.append(record_id)
                     if image_url:
+                        self.report_phase(position, total_models, title, "kép másolása")
                         try:
                             image_data = download_image_data(image_url)
                             if image_data:
@@ -1617,7 +2074,7 @@ class App(tk.Tk):
                         except (OSError, ValueError, urllib.error.URLError):
                             pass
                     added_count += 1
-                    self.report_progress(position, "Modellek és képek mentése")
+                    self.report_phase(position, total_models, title, "kész")
                 if cancelled and self.pending_cancel_delete:
                     for saved_id in self.current_run_record_ids:
                         self.database.delete(saved_id)
@@ -1642,7 +2099,7 @@ class App(tk.Tk):
                 cancelled = False
                 asked_continue = False
                 total_models = len(models)
-                for position, (model_url, title, image_url) in enumerate(models, start=1):
+                for position, (model_url, title, image_url, model_created_at) in enumerate(models, start=1):
                     if self.cancel_event.is_set():
                         cancelled = True
                         break
@@ -1659,7 +2116,7 @@ class App(tk.Tk):
                         continue
                     consecutive_existing = 0
                     self.report_phase(position, total_models, title, "rekord készítése")
-                    record_id = self.database.add(model_url, title, image_url, source["id"])
+                    record_id = self.database.add(model_url, title, image_url, source["id"], model_created_at)
                     self.current_run_record_ids.append(record_id)
                     if image_url:
                         self.report_phase(position, total_models, title, "kép másolása")
@@ -1677,8 +2134,11 @@ class App(tk.Tk):
                     added_count = 0
                 self.after(0, lambda: self.add_finished(added_count, len(models), cancelled=cancelled))
                 return
+            # Fallback for any source that isn't one of the three listing scrapers above: the
+            # URL itself is treated as a single page to record, not a list to crawl. hours is
+            # deliberately unused here (and everywhere above) - it's only ever a suggestion
+            # shown to the user; the real duplicate guard is record_exists() checking the URL.
             title, image_url = fetch_page(url, source["parser_type"])
-            # The hours value is passed into the loading pipeline for the source-specific list parser.
             record_id = self.database.add(url, title, image_url, source["id"])
             if image_url:
                 try:
@@ -1757,6 +2217,11 @@ class App(tk.Tk):
         self.add_button.configure(state="normal")
         messagebox.showerror("Beolvasási hiba", error)
 
+    # Saving re-runs load_records(), which re-queries the DB and can shrink/reorder the list
+    # (e.g. the "Csak az érdekeltek" filter hiding a record the moment it's marked not
+    # interested) - so the record's id, not its old list index, is used to relocate it
+    # afterwards. auto_advance (Érdekel/Nem érdekel) also implies "seen", and moves on to
+    # the next surviving record instead of staying put like a plain Megnézve toggle does.
     def save_flags(self, auto_advance: bool = False) -> None:
         if not self.records or self.index < 0:
             return
@@ -1807,14 +2272,33 @@ class App(tk.Tk):
         self.load_records()
         self.status_var.set(f"{deleted_count} megtekintett, nem érdekel rekord törölve.")
 
-    # Placeholder for the upcoming URL.txt export feature.
+    # Exports the URLs of every watched+interested, not-yet-imported record to a plain text
+    # file (one URL per line), then marks those records as imported so a later export only
+    # ever picks up newly-interested records, never the same ones twice.
     def save_url_txt(self) -> None:
-        messagebox.showinfo("URL.txt mentése", "Ez a funkció még nem készült el.")
+        pending = self.database.pending_import()
+        if not pending:
+            messagebox.showinfo("URL.txt mentése", "Nincs exportálható rekord (megnézett, érdekel, még nem importált).")
+            return
+        file_path = filedialog.asksaveasfilename(
+            title="URL.txt mentése",
+            initialfile="urls.txt",
+            defaultextension=".txt",
+            filetypes=[("Szöveges fájl", "*.txt"), ("Minden fájl", "*.*")],
+        )
+        if not file_path:
+            return
+        with open(file_path, "w", encoding="utf-8") as file:
+            for row in pending:
+                file.write(row["url"] + "\n")
+        self.database.mark_imported([row["id"] for row in pending])
+        self.load_records()
+        self.status_var.set(f"{len(pending)} URL mentve és importáltra jelölve.")
 
     def clear_all_flags(self) -> None:
         if not messagebox.askyesno(
             "Jelölések törlése",
-            "Biztosan törlöd a Megnézve, Érdekel és Nem érdekel jelöléseket minden rekordnál?",
+            "Biztosan törlöd a Megnézve, Érdekel, Nem érdekel és Importálva jelöléseket minden rekordnál?",
         ):
             return
         cleared_count = self.database.clear_all_flags()
@@ -1825,6 +2309,60 @@ class App(tk.Tk):
         if self.records and self.index >= 0:
             import webbrowser
             webbrowser.open(self.records[self.index]["url"])
+
+    # Program name/version, changelog, description and detailed help, in that order, each
+    # section separated by a horizontal rule - a single read-only, scrollable window rather
+    # than several dialogs, since the user reads it top-to-bottom in one sitting.
+    def show_info_dialog(self) -> None:
+        colors = getattr(self, "current_theme", THEMES["light"])
+        info_window = tk.Toplevel(self, background=colors["bg"])
+        info_window.title("Információ")
+        info_window.geometry("640x600")
+        info_window.transient(self)
+        container = ttk.Frame(info_window, padding=12)
+        container.pack(fill="both", expand=True)
+        container.columnconfigure(0, weight=1)
+        container.rowconfigure(0, weight=1)
+        text = tk.Text(
+            container,
+            wrap="word",
+            font=("Segoe UI", 10),
+            padx=8,
+            pady=8,
+            borderwidth=0,
+            background=colors["entry_bg"],
+            foreground=colors["fg"],
+            insertbackground=colors["fg"],
+        )
+        scrollbar = ttk.Scrollbar(container, orient="vertical", command=text.yview)
+        text.configure(yscrollcommand=scrollbar.set)
+        text.grid(row=0, column=0, sticky="nsew")
+        scrollbar.grid(row=0, column=1, sticky="ns")
+        text.tag_configure("heading", font=("Segoe UI", 12, "bold"), spacing3=6)
+        text.tag_configure("rule", foreground=colors["border"])
+        text.tag_configure("body", font=("Segoe UI", 10))
+
+        def add_heading(heading_text: str) -> None:
+            text.insert("end", heading_text + "\n", "heading")
+
+        def add_rule() -> None:
+            text.insert("end", ("─" * 70) + "\n\n", "rule")
+
+        def add_body(body_text: str) -> None:
+            text.insert("end", body_text.strip("\n") + "\n\n", "body")
+
+        add_heading(f"3DModelScope {APP_VERSION}")
+        add_rule()
+        add_heading("Verzió módosítások")
+        add_body(CHANGELOG)
+        add_rule()
+        add_heading("Mit csinál a program?")
+        add_body(APP_DESCRIPTION)
+        add_rule()
+        add_heading("Részletes súgó")
+        add_body(HELP_TEXT)
+        text.configure(state="disabled")
+        ttk.Button(info_window, text="Bezárás", command=info_window.destroy).pack(pady=(0, 12))
 
 
 if __name__ == "__main__":

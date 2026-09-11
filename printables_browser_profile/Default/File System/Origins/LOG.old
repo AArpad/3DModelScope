@@ -1,3 +1,5 @@
-2026/09/10-11:16:49.715 876c Reusing MANIFEST C:\Users\ÁrpádNagykékesi\Documents\Python\3DSites\printables_browser_profile\Default\File System\Origins/MANIFEST-000001
-2026/09/10-11:16:49.724 876c Recovering log #3
-2026/09/10-11:16:49.725 876c Reusing old log C:\Users\ÁrpádNagykékesi\Documents\Python\3DSites\printables_browser_profile\Default\File System\Origins/000003.log 
+2026/09/10-14:13:17.467 d04 Log #3: 3 ops saved to Table #4 OK
+2026/09/10-14:13:17.484 d04 Archiving C:\Users\ÁrpádNagykékesi\Documents\Python\3DSites\printables_browser_profile\Default\File System\Origins/000003.log: OK
+2026/09/10-14:13:17.486 d04 Table #4: 3 entries OK
+2026/09/10-14:13:17.669 d04 Archiving C:\Users\ÁrpádNagykékesi\Documents\Python\3DSites\printables_browser_profile\Default\File System\Origins/MANIFEST-000001: OK
+2026/09/10-14:13:17.749 d04 **** Repaired leveldb C:\Users\ÁrpádNagykékesi\Documents\Python\3DSites\printables_browser_profile\Default\File System\Origins; recovered 1 files; 190 bytes. Some data may have been lost. ****

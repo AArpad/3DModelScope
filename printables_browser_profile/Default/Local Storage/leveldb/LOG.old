@@ -1,3 +1,2 @@
-2026/09/10-11:16:48.520 8fd4 Reusing MANIFEST C:\Users\ÁrpádNagykékesi\Documents\Python\3DSites\printables_browser_profile\Default\Local Storage\leveldb/MANIFEST-000001
-2026/09/10-11:16:48.576 8fd4 Recovering log #3
-2026/09/10-11:16:48.606 8fd4 Reusing old log C:\Users\ÁrpádNagykékesi\Documents\Python\3DSites\printables_browser_profile\Default\Local Storage\leveldb/000003.log 
+2026/09/10-14:11:28.443 16f8 Creating DB C:\Users\ÁrpádNagykékesi\Documents\Python\3DSites\printables_browser_profile\Default\Local Storage\leveldb since it was missing.
+2026/09/10-14:11:28.877 16f8 Reusing MANIFEST C:\Users\ÁrpádNagykékesi\Documents\Python\3DSites\printables_browser_profile\Default\Local Storage\leveldb/MANIFEST-000001

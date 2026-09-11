@@ -1,0 +1,330 @@
+[2026-09-09T13:49:13.835Z] [INFO] ========================================================================================================================
+[2026-09-09T13:49:13.835Z] [INFO] Initializing MAM Client.
+App: com.microsoft.edge 152.0.4191.66
+SDK: 2.1.367.0
+OS: windows 10.0.26200.9106
+DeviceType: Desktop
+Manufacturer: HP
+Model: HP ProBook 640 G8 Notebook PC
+Telemetry: yes
+Managed device support: enabled
+[2026-09-09T13:49:13.835Z] [INFO] Telemetry session e2c71c2f-e55e-480c-9069-6096c5f991c8.
+[2026-09-09T13:49:13.836Z] [INFO] Initializing cache (v1).
+[2026-09-09T13:50:14.611Z] [INFO] Shutting down.
+[2026-09-09T13:50:14.611Z] [INFO] Stopping the task scheduler and canceling any outstanding work items...
+[2026-09-09T13:50:14.611Z] [INFO] Task scheduler has stopped, and all work has been canceled.
+[2026-09-10T08:23:12.407Z] [INFO] ========================================================================================================================
+[2026-09-10T08:23:12.407Z] [INFO] Initializing MAM Client.
+App: com.microsoft.edge 152.0.4191.66
+SDK: 2.1.367.0
+OS: windows 10.0.26200.9445
+DeviceType: Desktop
+Manufacturer: HP
+Model: HP ProBook 640 G8 Notebook PC
+Telemetry: yes
+Managed device support: enabled
+[2026-09-10T08:23:12.407Z] [INFO] Telemetry session ffdc26a4-129f-449d-8191-a9f5fb733e3c.
+[2026-09-10T08:23:12.410Z] [INFO] Reinitialized cache (v1).
+[2026-09-10T08:23:20.147Z] [INFO] Shutting down.
+[2026-09-10T08:23:20.147Z] [INFO] Stopping the task scheduler and canceling any outstanding work items...
+[2026-09-10T08:23:20.147Z] [INFO] Task scheduler has stopped, and all work has been canceled.
+[2026-09-10T08:49:08.825Z] [INFO] ========================================================================================================================
+[2026-09-10T08:49:08.825Z] [INFO] Initializing MAM Client.
+App: com.microsoft.edge 152.0.4191.66
+SDK: 2.1.367.0
+OS: windows 10.0.26200.9445
+DeviceType: Desktop
+Manufacturer: HP
+Model: HP ProBook 640 G8 Notebook PC
+Telemetry: yes
+Managed device support: enabled
+[2026-09-10T08:49:08.825Z] [INFO] Telemetry session e42b3758-50e8-4cfd-bc5f-ff3504cbf791.
+[2026-09-10T08:49:08.826Z] [INFO] Reinitialized cache (v1).
+[2026-09-10T08:50:10.271Z] [INFO] Shutting down.
+[2026-09-10T08:50:10.271Z] [INFO] Stopping the task scheduler and canceling any outstanding work items...
+[2026-09-10T08:50:10.271Z] [INFO] Task scheduler has stopped, and all work has been canceled.
+[2026-09-10T09:15:09.481Z] [INFO] ========================================================================================================================
+[2026-09-10T09:15:09.481Z] [INFO] Initializing MAM Client.
+App: com.microsoft.edge 152.0.4191.66
+SDK: 2.1.367.0
+OS: windows 10.0.26200.9445
+DeviceType: Desktop
+Manufacturer: HP
+Model: HP ProBook 640 G8 Notebook PC
+Telemetry: yes
+Managed device support: enabled
+[2026-09-10T09:15:09.482Z] [INFO] Telemetry session 6c0924f2-8de2-4a11-a8da-8f218bb8483f.
+[2026-09-10T09:15:09.482Z] [INFO] Reinitialized cache (v1).
+[2026-09-10T09:15:16.364Z] [INFO] Shutting down.
+[2026-09-10T09:15:16.364Z] [INFO] Stopping the task scheduler and canceling any outstanding work items...
+[2026-09-10T09:15:16.364Z] [INFO] Task scheduler has stopped, and all work has been canceled.
+[2026-09-10T09:15:36.210Z] [INFO] ========================================================================================================================
+[2026-09-10T09:15:36.210Z] [INFO] Initializing MAM Client.
+App: com.microsoft.edge 152.0.4191.66
+SDK: 2.1.367.0
+OS: windows 10.0.26200.9445
+DeviceType: Desktop
+Manufacturer: HP
+Model: HP ProBook 640 G8 Notebook PC
+Telemetry: yes
+Managed device support: enabled
+[2026-09-10T09:15:36.210Z] [INFO] Telemetry session 384761a7-e74a-40c2-ab8a-b1e56ee21b62.
+[2026-09-10T09:15:36.211Z] [INFO] Reinitialized cache (v1).
+[2026-09-10T09:15:39.006Z] [INFO] Shutting down.
+[2026-09-10T09:15:39.006Z] [INFO] Stopping the task scheduler and canceling any outstanding work items...
+[2026-09-10T09:15:39.006Z] [INFO] Task scheduler has stopped, and all work has been canceled.
+[2026-09-10T09:16:47.693Z] [INFO] ========================================================================================================================
+[2026-09-10T09:16:47.693Z] [INFO] Initializing MAM Client.
+App: com.microsoft.edge 152.0.4191.66
+SDK: 2.1.367.0
+OS: windows 10.0.26200.9445
+DeviceType: Desktop
+Manufacturer: HP
+Model: HP ProBook 640 G8 Notebook PC
+Telemetry: yes
+Managed device support: enabled
+[2026-09-10T09:16:47.693Z] [INFO] Telemetry session f2e8e336-5cba-45ec-972f-8aae0af5a99e.
+[2026-09-10T09:16:47.695Z] [INFO] Reinitialized cache (v1).
+[2026-09-10T09:16:52.977Z] [INFO] Shutting down.
+[2026-09-10T09:16:52.977Z] [INFO] Stopping the task scheduler and canceling any outstanding work items...
+[2026-09-10T09:16:52.977Z] [INFO] Task scheduler has stopped, and all work has been canceled.
+[2026-09-10T09:17:07.964Z] [INFO] ========================================================================================================================
+[2026-09-10T09:17:07.965Z] [INFO] Initializing MAM Client.
+App: com.microsoft.edge 152.0.4191.66
+SDK: 2.1.367.0
+OS: windows 10.0.26200.9445
+DeviceType: Desktop
+Manufacturer: HP
+Model: HP ProBook 640 G8 Notebook PC
+Telemetry: yes
+Managed device support: enabled
+[2026-09-10T09:17:07.965Z] [INFO] Telemetry session 18c97efc-bddd-4090-9d58-38ae4e874a0f.
+[2026-09-10T09:17:07.966Z] [INFO] Reinitialized cache (v1).
+[2026-09-10T09:17:14.450Z] [INFO] Shutting down.
+[2026-09-10T09:17:14.450Z] [INFO] Stopping the task scheduler and canceling any outstanding work items...
+[2026-09-10T09:17:14.450Z] [INFO] Task scheduler has stopped, and all work has been canceled.
+[2026-09-10T12:11:27.504Z] [INFO] ========================================================================================================================
+[2026-09-10T12:11:27.504Z] [INFO] Initializing MAM Client.
+App: com.microsoft.edge 152.0.4191.66
+SDK: 2.1.367.0
+OS: windows 10.0.26200.9445
+DeviceType: Desktop
+Manufacturer: HP
+Model: HP ProBook 640 G8 Notebook PC
+Telemetry: yes
+Managed device support: enabled
+[2026-09-10T12:11:27.504Z] [INFO] Telemetry session 25ad1663-3be2-40c8-8e74-1e1af5d7454c.
+[2026-09-10T12:11:27.505Z] [INFO] Reinitialized cache (v1).
+[2026-09-10T12:11:30.239Z] [INFO] Shutting down.
+[2026-09-10T12:11:30.239Z] [INFO] Stopping the task scheduler and canceling any outstanding work items...
+[2026-09-10T12:11:30.239Z] [INFO] Task scheduler has stopped, and all work has been canceled.
+[2026-09-10T12:13:14.288Z] [INFO] ========================================================================================================================
+[2026-09-10T12:13:14.288Z] [INFO] Initializing MAM Client.
+App: com.microsoft.edge 152.0.4191.66
+SDK: 2.1.367.0
+OS: windows 10.0.26200.9445
+DeviceType: Desktop
+Manufacturer: HP
+Model: HP ProBook 640 G8 Notebook PC
+Telemetry: yes
+Managed device support: enabled
+[2026-09-10T12:13:14.289Z] [INFO] Telemetry session b7cbbf01-0f0a-45c3-a54b-e14a873463ae.
+[2026-09-10T12:13:14.289Z] [INFO] Reinitialized cache (v1).
+[2026-09-10T12:13:18.974Z] [INFO] Shutting down.
+[2026-09-10T12:13:18.974Z] [INFO] Stopping the task scheduler and canceling any outstanding work items...
+[2026-09-10T12:13:18.974Z] [INFO] Task scheduler has stopped, and all work has been canceled.
+[2026-09-11T07:59:06.817Z] [INFO] ========================================================================================================================
+[2026-09-11T07:59:06.817Z] [INFO] Initializing MAM Client.
+App: com.microsoft.edge 152.0.4191.66
+SDK: 2.1.367.0
+OS: windows 10.0.26200.9445
+DeviceType: Desktop
+Manufacturer: HP
+Model: HP ProBook 640 G8 Notebook PC
+Telemetry: yes
+Managed device support: enabled
+[2026-09-11T07:59:06.817Z] [INFO] Telemetry session 43429611-34cc-4793-b9de-7de29e179ef4.
+[2026-09-11T07:59:06.819Z] [INFO] Reinitialized cache (v1).
+[2026-09-11T07:59:14.853Z] [INFO] Shutting down.
+[2026-09-11T07:59:14.854Z] [INFO] Stopping the task scheduler and canceling any outstanding work items...
+[2026-09-11T07:59:14.854Z] [INFO] Task scheduler has stopped, and all work has been canceled.
+[2026-09-11T07:59:38.943Z] [INFO] ========================================================================================================================
+[2026-09-11T07:59:38.944Z] [INFO] Initializing MAM Client.
+App: com.microsoft.edge 152.0.4191.66
+SDK: 2.1.367.0
+OS: windows 10.0.26200.9445
+DeviceType: Desktop
+Manufacturer: HP
+Model: HP ProBook 640 G8 Notebook PC
+Telemetry: yes
+Managed device support: enabled
+[2026-09-11T07:59:38.944Z] [INFO] Telemetry session 1e2649be-f2d7-4c5a-86f1-209cc114d3d5.
+[2026-09-11T07:59:38.948Z] [INFO] Reinitialized cache (v1).
+[2026-09-11T07:59:45.563Z] [INFO] Shutting down.
+[2026-09-11T07:59:45.563Z] [INFO] Stopping the task scheduler and canceling any outstanding work items...
+[2026-09-11T07:59:45.563Z] [INFO] Task scheduler has stopped, and all work has been canceled.
+[2026-09-11T08:00:09.697Z] [INFO] ========================================================================================================================
+[2026-09-11T08:00:09.697Z] [INFO] Initializing MAM Client.
+App: com.microsoft.edge 152.0.4191.66
+SDK: 2.1.367.0
+OS: windows 10.0.26200.9445
+DeviceType: Desktop
+Manufacturer: HP
+Model: HP ProBook 640 G8 Notebook PC
+Telemetry: yes
+Managed device support: enabled
+[2026-09-11T08:00:09.697Z] [INFO] Telemetry session a6443c3b-ff15-4d2a-85de-9aad8895d663.
+[2026-09-11T08:00:09.698Z] [INFO] Reinitialized cache (v1).
+[2026-09-11T08:00:14.169Z] [INFO] Shutting down.
+[2026-09-11T08:00:14.169Z] [INFO] Stopping the task scheduler and canceling any outstanding work items...
+[2026-09-11T08:00:14.169Z] [INFO] Task scheduler has stopped, and all work has been canceled.
+[2026-09-11T08:00:45.546Z] [INFO] ========================================================================================================================
+[2026-09-11T08:00:45.546Z] [INFO] Initializing MAM Client.
+App: com.microsoft.edge 152.0.4191.66
+SDK: 2.1.367.0
+OS: windows 10.0.26200.9445
+DeviceType: Desktop
+Manufacturer: HP
+Model: HP ProBook 640 G8 Notebook PC
+Telemetry: yes
+Managed device support: enabled
+[2026-09-11T08:00:45.546Z] [INFO] Telemetry session bebc5a9f-416e-4e9a-b96e-84287feff8e9.
+[2026-09-11T08:00:45.547Z] [INFO] Reinitialized cache (v1).
+[2026-09-11T08:00:57.264Z] [INFO] Shutting down.
+[2026-09-11T08:00:57.265Z] [INFO] Stopping the task scheduler and canceling any outstanding work items...
+[2026-09-11T08:00:57.265Z] [INFO] Task scheduler has stopped, and all work has been canceled.
+[2026-09-11T08:01:10.662Z] [INFO] ========================================================================================================================
+[2026-09-11T08:01:10.662Z] [INFO] Initializing MAM Client.
+App: com.microsoft.edge 152.0.4191.66
+SDK: 2.1.367.0
+OS: windows 10.0.26200.9445
+DeviceType: Desktop
+Manufacturer: HP
+Model: HP ProBook 640 G8 Notebook PC
+Telemetry: yes
+Managed device support: enabled
+[2026-09-11T08:01:10.662Z] [INFO] Telemetry session 096791c6-e1af-43d2-9fe6-2e769b512347.
+[2026-09-11T08:01:10.663Z] [INFO] Reinitialized cache (v1).
+[2026-09-11T08:01:17.078Z] [INFO] Shutting down.
+[2026-09-11T08:01:17.078Z] [INFO] Stopping the task scheduler and canceling any outstanding work items...
+[2026-09-11T08:01:17.078Z] [INFO] Task scheduler has stopped, and all work has been canceled.
+[2026-09-11T08:01:30.757Z] [INFO] ========================================================================================================================
+[2026-09-11T08:01:30.758Z] [INFO] Initializing MAM Client.
+App: com.microsoft.edge 152.0.4191.66
+SDK: 2.1.367.0
+OS: windows 10.0.26200.9445
+DeviceType: Desktop
+Manufacturer: HP
+Model: HP ProBook 640 G8 Notebook PC
+Telemetry: yes
+Managed device support: enabled
+[2026-09-11T08:01:30.758Z] [INFO] Telemetry session bb72057e-129a-416e-9d5b-0b603d99fb2a.
+[2026-09-11T08:01:30.759Z] [INFO] Reinitialized cache (v1).
+[2026-09-11T08:01:42.973Z] [INFO] Shutting down.
+[2026-09-11T08:01:42.973Z] [INFO] Stopping the task scheduler and canceling any outstanding work items...
+[2026-09-11T08:01:42.973Z] [INFO] Task scheduler has stopped, and all work has been canceled.
+[2026-09-11T08:02:09.854Z] [INFO] ========================================================================================================================
+[2026-09-11T08:02:09.854Z] [INFO] Initializing MAM Client.
+App: com.microsoft.edge 152.0.4191.66
+SDK: 2.1.367.0
+OS: windows 10.0.26200.9445
+DeviceType: Desktop
+Manufacturer: HP
+Model: HP ProBook 640 G8 Notebook PC
+Telemetry: yes
+Managed device support: enabled
+[2026-09-11T08:02:09.854Z] [INFO] Telemetry session cb2ce7cb-e3f9-4efc-89f8-f65f673a29bb.
+[2026-09-11T08:02:09.855Z] [INFO] Reinitialized cache (v1).
+[2026-09-11T08:02:18.669Z] [INFO] Shutting down.
+[2026-09-11T08:02:18.669Z] [INFO] Stopping the task scheduler and canceling any outstanding work items...
+[2026-09-11T08:02:18.669Z] [INFO] Task scheduler has stopped, and all work has been canceled.
+[2026-09-11T08:02:30.556Z] [INFO] ========================================================================================================================
+[2026-09-11T08:02:30.557Z] [INFO] Initializing MAM Client.
+App: com.microsoft.edge 152.0.4191.66
+SDK: 2.1.367.0
+OS: windows 10.0.26200.9445
+DeviceType: Desktop
+Manufacturer: HP
+Model: HP ProBook 640 G8 Notebook PC
+Telemetry: yes
+Managed device support: enabled
+[2026-09-11T08:02:30.557Z] [INFO] Telemetry session 2444b15c-8815-4ac2-b873-dda2f2747b79.
+[2026-09-11T08:02:30.558Z] [INFO] Reinitialized cache (v1).
+[2026-09-11T08:02:36.268Z] [INFO] Shutting down.
+[2026-09-11T08:02:36.268Z] [INFO] Stopping the task scheduler and canceling any outstanding work items...
+[2026-09-11T08:02:36.268Z] [INFO] Task scheduler has stopped, and all work has been canceled.
+[2026-09-11T08:03:00.115Z] [INFO] ========================================================================================================================
+[2026-09-11T08:03:00.116Z] [INFO] Initializing MAM Client.
+App: com.microsoft.edge 152.0.4191.66
+SDK: 2.1.367.0
+OS: windows 10.0.26200.9445
+DeviceType: Desktop
+Manufacturer: HP
+Model: HP ProBook 640 G8 Notebook PC
+Telemetry: yes
+Managed device support: enabled
+[2026-09-11T08:03:00.116Z] [INFO] Telemetry session b853f1ba-669b-4579-b3fa-7383c3c369cd.
+[2026-09-11T08:03:00.118Z] [INFO] Reinitialized cache (v1).
+[2026-09-11T08:03:05.528Z] [INFO] Shutting down.
+[2026-09-11T08:03:05.528Z] [INFO] Stopping the task scheduler and canceling any outstanding work items...
+[2026-09-11T08:03:05.528Z] [INFO] Task scheduler has stopped, and all work has been canceled.
+[2026-09-11T08:06:55.458Z] [INFO] ========================================================================================================================
+[2026-09-11T08:06:55.459Z] [INFO] Initializing MAM Client.
+App: com.microsoft.edge 152.0.4191.66
+SDK: 2.1.367.0
+OS: windows 10.0.26200.9445
+DeviceType: Desktop
+Manufacturer: HP
+Model: HP ProBook 640 G8 Notebook PC
+Telemetry: yes
+Managed device support: enabled
+[2026-09-11T08:06:55.459Z] [INFO] Telemetry session 5036a743-7735-4477-9341-efca99c6a933.
+[2026-09-11T08:06:55.460Z] [INFO] Reinitialized cache (v1).
+[2026-09-11T08:07:00.242Z] [INFO] Shutting down.
+[2026-09-11T08:07:00.242Z] [INFO] Stopping the task scheduler and canceling any outstanding work items...
+[2026-09-11T08:07:00.242Z] [INFO] Task scheduler has stopped, and all work has been canceled.
+[2026-09-11T08:07:28.286Z] [INFO] ========================================================================================================================
+[2026-09-11T08:07:28.287Z] [INFO] Initializing MAM Client.
+App: com.microsoft.edge 152.0.4191.66
+SDK: 2.1.367.0
+OS: windows 10.0.26200.9445
+DeviceType: Desktop
+Manufacturer: HP
+Model: HP ProBook 640 G8 Notebook PC
+Telemetry: yes
+Managed device support: enabled
+[2026-09-11T08:07:28.287Z] [INFO] Telemetry session cfbf9ea4-313f-46cf-91fc-9704c343a943.
+[2026-09-11T08:07:28.288Z] [INFO] Reinitialized cache (v1).
+[2026-09-11T08:08:02.955Z] [INFO] Shutting down.
+[2026-09-11T08:08:02.955Z] [INFO] Stopping the task scheduler and canceling any outstanding work items...
+[2026-09-11T08:08:02.955Z] [INFO] Task scheduler has stopped, and all work has been canceled.
+[2026-09-11T08:11:13.642Z] [INFO] ========================================================================================================================
+[2026-09-11T08:11:13.643Z] [INFO] Initializing MAM Client.
+App: com.microsoft.edge 152.0.4191.66
+SDK: 2.1.367.0
+OS: windows 10.0.26200.9445
+DeviceType: Desktop
+Manufacturer: HP
+Model: HP ProBook 640 G8 Notebook PC
+Telemetry: yes
+Managed device support: enabled
+[2026-09-11T08:11:13.643Z] [INFO] Telemetry session c2d15c30-c1db-4daf-9eb3-343d0cb7f19a.
+[2026-09-11T08:11:13.644Z] [INFO] Reinitialized cache (v1).
+[2026-09-11T08:11:48.457Z] [INFO] Shutting down.
+[2026-09-11T08:11:48.457Z] [INFO] Stopping the task scheduler and canceling any outstanding work items...
+[2026-09-11T08:11:48.457Z] [INFO] Task scheduler has stopped, and all work has been canceled.
+[2026-09-11T08:12:01.104Z] [INFO] ========================================================================================================================
+[2026-09-11T08:12:01.104Z] [INFO] Initializing MAM Client.
+App: com.microsoft.edge 152.0.4191.66
+SDK: 2.1.367.0
+OS: windows 10.0.26200.9445
+DeviceType: Desktop
+Manufacturer: HP
+Model: HP ProBook 640 G8 Notebook PC
+Telemetry: yes
+Managed device support: enabled
+[2026-09-11T08:12:01.105Z] [INFO] Telemetry session 47d04cbe-5abd-4a16-9b5c-106b4663db87.
+[2026-09-11T08:12:01.105Z] [INFO] Reinitialized cache (v1).
+[2026-09-11T08:12:09.265Z] [INFO] Shutting down.
+[2026-09-11T08:12:09.265Z] [INFO] Stopping the task scheduler and canceling any outstanding work items...
+[2026-09-11T08:12:09.265Z] [INFO] Task scheduler has stopped, and all work has been canceled.

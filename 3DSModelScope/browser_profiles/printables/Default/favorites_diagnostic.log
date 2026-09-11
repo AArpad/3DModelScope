@@ -1,0 +1,43 @@
+2026-09-09 13:49:12.913: [INFO] CurrentProfilePath: C:\Users\ÁrpádNagykékesi\Documents\Python\3DSites\printables_browser_profile\Default
+2026-09-09 13:49:12.913: [INFO] Profiles total count: 1
+2026-09-09 13:49:12.913: [INFO] Profile: name=1. profil path=C:\Users\ÁrpádNagykékesi\Documents\Python\3DSites\printables_browser_profile\Default lastActive=null
+2026-09-09 13:49:12.913: [INFO] LastUsedProfileDir: C:\Users\ÁrpádNagykékesi\Documents\Python\3DSites\printables_browser_profile\Default
+2026-09-09 13:49:12.913: [INFO] VisibilityChanged: 0
+2026-09-09 13:49:12.944: [INFO] OnDoneLoading sync enabled: 0
+2026-09-09 13:49:12.944: [INFO] BookmarkModelLoaded, ids_reassigned: 0
+2026-09-09 13:49:12.944: [INFO] BookmarksLoadDropped droppedNodes=0
+2026-09-09 13:49:12.944: [INFO] BookmarksSnapshot Startup total=0 bar=0 other=0 mobile=0 showBar=0 showBarNTP=1
+2026-09-09 13:50:14.689: [INFO] BookmarksSnapshot Shutdown total=0 bar=0 other=0 mobile=0 showBar=0 showBarNTP=1
+2026-09-10 08:49:08.968: [INFO] CurrentProfilePath: C:\Users\ÁrpádNagykékesi\Documents\Python\3DSites\printables_browser_profile\Default
+2026-09-10 08:49:08.968: [INFO] Profiles total count: 1
+2026-09-10 08:49:08.968: [INFO] Profile: name=1. profil path=C:\Users\ÁrpádNagykékesi\Documents\Python\3DSites\printables_browser_profile\Default lastActive=2026-09-10T08:23:12.621Z
+2026-09-10 08:49:08.968: [INFO] LastUsedProfileDir: C:\Users\ÁrpádNagykékesi\Documents\Python\3DSites\printables_browser_profile\Default
+2026-09-10 08:49:08.968: [INFO] MostRecentlyActiveProfile: name=1. profil path=C:\Users\ÁrpádNagykékesi\Documents\Python\3DSites\printables_browser_profile\Default lastActive=2026-09-10T08:23:12.621Z
+2026-09-10 08:49:08.968: [INFO] VisibilityChanged: 0
+2026-09-10 08:49:09.001: [INFO] OnDoneLoading sync enabled: 0
+2026-09-10 08:49:09.001: [INFO] BookmarkModelLoaded, ids_reassigned: 0
+2026-09-10 08:49:09.001: [INFO] BookmarksLoadDropped droppedNodes=0
+2026-09-10 08:49:09.001: [INFO] BookmarksSnapshot Startup total=0 bar=0 other=0 mobile=0 showBar=0 showBarNTP=1
+2026-09-10 08:50:10.349: [INFO] BookmarksSnapshot Shutdown total=0 bar=0 other=0 mobile=0 showBar=0 showBarNTP=1
+2026-09-11 08:01:30.889: [INFO] CurrentProfilePath: C:\Users\ÁrpádNagykékesi\Documents\Python\3DSites\3DSModelScope\browser_profiles\printables\Default
+2026-09-11 08:01:30.889: [INFO] Profiles total count: 1
+2026-09-11 08:01:30.889: [INFO] Profile: name=1. profil path=C:\Users\ÁrpádNagykékesi\Documents\Python\3DSites\3DSModelScope\browser_profiles\printables\Default lastActive=2026-09-11T08:01:10.822Z
+2026-09-11 08:01:30.889: [INFO] LastUsedProfileDir: C:\Users\ÁrpádNagykékesi\Documents\Python\3DSites\3DSModelScope\browser_profiles\printables\Default
+2026-09-11 08:01:30.889: [INFO] MostRecentlyActiveProfile: name=1. profil path=C:\Users\ÁrpádNagykékesi\Documents\Python\3DSites\3DSModelScope\browser_profiles\printables\Default lastActive=2026-09-11T08:01:10.822Z
+2026-09-11 08:01:30.889: [INFO] VisibilityChanged: 0
+2026-09-11 08:01:30.964: [INFO] OnDoneLoading sync enabled: 0
+2026-09-11 08:01:30.964: [INFO] BookmarkModelLoaded, ids_reassigned: 0
+2026-09-11 08:01:30.964: [INFO] BookmarksLoadDropped droppedNodes=0
+2026-09-11 08:01:30.964: [INFO] BookmarksSnapshot Startup total=0 bar=0 other=0 mobile=0 showBar=0 showBarNTP=1
+2026-09-11 08:01:43.060: [INFO] BookmarksSnapshot Shutdown total=0 bar=0 other=0 mobile=0 showBar=0 showBarNTP=1
+2026-09-11 08:11:13.861: [INFO] CurrentProfilePath: C:\Users\ÁrpádNagykékesi\Documents\Python\3DSites\3DSModelScope\browser_profiles\printables\Default
+2026-09-11 08:11:13.861: [INFO] Profiles total count: 1
+2026-09-11 08:11:13.861: [INFO] Profile: name=1. profil path=C:\Users\ÁrpádNagykékesi\Documents\Python\3DSites\3DSModelScope\browser_profiles\printables\Default lastActive=2026-09-11T08:07:28.444Z
+2026-09-11 08:11:13.862: [INFO] LastUsedProfileDir: C:\Users\ÁrpádNagykékesi\Documents\Python\3DSites\3DSModelScope\browser_profiles\printables\Default
+2026-09-11 08:11:13.862: [INFO] MostRecentlyActiveProfile: name=1. profil path=C:\Users\ÁrpádNagykékesi\Documents\Python\3DSites\3DSModelScope\browser_profiles\printables\Default lastActive=2026-09-11T08:07:28.444Z
+2026-09-11 08:11:13.862: [INFO] VisibilityChanged: 0
+2026-09-11 08:11:13.939: [INFO] OnDoneLoading sync enabled: 0
+2026-09-11 08:11:13.939: [INFO] BookmarkModelLoaded, ids_reassigned: 0
+2026-09-11 08:11:13.939: [INFO] BookmarksLoadDropped droppedNodes=0
+2026-09-11 08:11:13.939: [INFO] BookmarksSnapshot Startup total=0 bar=0 other=0 mobile=0 showBar=0 showBarNTP=1
+2026-09-11 08:11:48.533: [INFO] BookmarksSnapshot Shutdown total=0 bar=0 other=0 mobile=0 showBar=0 showBarNTP=1
