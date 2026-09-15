@@ -1,33 +1,24 @@
 from __future__ import annotations
 
 import html
-import json
 import math
-import re
-import shutil
 import sqlite3
 import sys
 import threading
 import urllib.error
 import urllib.parse
 import urllib.request
-from datetime import datetime, timedelta, timezone
+from datetime import datetime
 from html.parser import HTMLParser
 from io import BytesIO
 from pathlib import Path
-from typing import Callable
 import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
 
 from PIL import Image, ImageTk
-from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
-from playwright.sync_api import sync_playwright
-# Printables and Thingiverse specifically need Patchright: it patches the CDP-level
-# automation leaks that their Cloudflare managed challenge fingerprints, which plain
-# Playwright can't avoid regardless of headless/headed mode. MakerWorld has no such
-# challenge, so it stays on plain Playwright.
-from patchright.sync_api import TimeoutError as PatchrightTimeoutError
-from patchright.sync_api import sync_playwright as sync_patchright
+
+from sources import makerworld, printables, thingiverse
+from sources.common import USER_AGENT
 
 
 APP_DIR = Path(sys.executable).resolve().parent if getattr(sys, "frozen", False) else Path(__file__).resolve().parent
@@ -38,16 +29,15 @@ DB_PATH = APP_DATA_DIR / "3DModelScope.db"
 # In a PyInstaller onefile build, bundled data (added via --add-data) is unpacked to a temp
 # directory at runtime (sys._MEIPASS), not next to the exe, so the icon is looked up there.
 ICON_PATH = Path(getattr(sys, "_MEIPASS", APP_DIR)) / "app_icon.ico" if getattr(sys, "frozen", False) else APP_DIR / "app_icon.ico"
-# Persistent browser profiles for Cloudflare-protected sources: keep the clearance cookie
-# between runs, so once the interstitial is passed once, later scans usually skip it entirely.
-# LEGACY_*_PROFILE_DIR is where older builds put them, and ensure_browser_profile_dir below
-# migrates a profile found there so upgrading doesn't throw away an already-cleared cookie.
+# Persistent browser profile for Thingiverse (still Cloudflare-protected, unlike MakerWorld's
+# and Printables' search APIs, which turned out to need no browser at all - see sources/):
+# keeps the clearance cookie between runs, so once the interstitial is passed once, later scans
+# usually skip it entirely. LEGACY_THINGIVERSE_PROFILE_DIR is where older builds put it, and
+# sources.thingiverse.ensure_profile_dir migrates a profile found there so upgrading doesn't
+# throw away an already-cleared cookie.
 BROWSER_PROFILES_DIR = APP_DATA_DIR / "browser_profiles"
-PRINTABLES_PROFILE_DIR = BROWSER_PROFILES_DIR / "printables"
 THINGIVERSE_PROFILE_DIR = BROWSER_PROFILES_DIR / "thingiverse"
-LEGACY_PRINTABLES_PROFILE_DIR = APP_DIR / "printables_browser_profile"
 LEGACY_THINGIVERSE_PROFILE_DIR = APP_DIR / "thingiverse_browser_profile"
-USER_AGENT = "WebRecordCollector/1.0"
 SOURCE_SEEDS = (
     ("MakerWorld", "MakerWorld", "https://makerworld.com", "makerworld", "continuous"),
     ("Printables", "Printables", "https://www.printables.com", "printables", "continuous"),
@@ -113,9 +103,17 @@ APP_VERSION = "1.0"
 # Shown in the Információ dialog, newest first. Add one line here whenever a user-visible
 # change ships, so the in-app changelog stays a real record instead of drifting from reality.
 CHANGELOG = """\
+1.0 (2026-09-11)
+  - MakerWorld és Printables lecserélve a saját, nyilvános kereső-API-jukra (böngésző és
+    Cloudflare-kerülés nélkül, közvetlen JSON-lekérdezéssel): mindkettő pontos dátum szerint
+    áll meg (a "Visszamenőleges órák" alapján), nem darabszám-limittel vagy ismétlődés-
+    számlálóval - így egy egész napi "termés" is gyorsan, teljesen lekérdezhető, akár több
+    ezer/tízezer tétel esetén is.
+  - A modell tényleges weboldali közzétételi dátuma (amikor elérhető) most már a rekord
+    "Létrehozva" mezőjében tárolódik, nem a mentés időpontja.
 1.0 (2026-09-10)
   - Thingiverse forrás: lapozós ("page=") lista beolvasás, ugyanazzal a Cloudflare-átjutással,
-    mint a Printables-nél.
+    mint korábban a Printables-nél (mostanra a Printables ezt is levetkőzte, lásd fent).
   - Importálva mező rekordonként: az URL.txt mentés jelöli meg vele az exportált sorokat,
     hogy egy következő mentés már csak az újakat írja ki.
   - URL.txt mentése gomb véglegesítve: a megnézett + érdekel + még nem importált rekordok
@@ -158,11 +156,12 @@ ADATBETÖLTÉS (bal oldali panel)
      látszik. "Megszakítás"-kor választhatsz, hogy az addig mentett új rekordokat megtartod
      vagy törlöd.
 
-CLOUDFLARE-VÉDETT FORRÁSOK (Printables, Thingiverse)
-  Ezek az oldalak Cloudflare "biztonsági ellenőrzést" mutathatnak. A program ilyenkor egy
-  látható, de minimalizált böngészőablakot nyit - a legtöbbször ez magától, pár másodperc
-  alatt lezajlik. Ha mégsem, állítsd vissza az ablakot a tálcáról, és kattints át rajta te
-  magad; utána a program automatikusan folytatja a beolvasást.
+CLOUDFLARE-VÉDETT FORRÁS (Thingiverse)
+  Ez az oldal Cloudflare "biztonsági ellenőrzést" mutathat. A program ilyenkor egy látható,
+  de minimalizált böngészőablakot nyit - a legtöbbször ez magától, pár másodperc alatt
+  lezajlik. Ha mégsem, állítsd vissza az ablakot a tálcáról, és kattints át rajta te magad;
+  utána a program automatikusan folytatja a beolvasást. (A MakerWorld és a Printables saját
+  belső keresőAPI-jukon keresztül, böngésző nélkül, közvetlenül töltődnek be.)
 
 REKORDOK FÜL
   A "Rekordok betöltése" tölti be a listát (a Beállításokban megadott limittel lapozva, ha be
@@ -269,399 +268,8 @@ def download_image_data(url: str) -> bytes | None:
     return image_data
 
 
-def _parse_makerworld_time(value: str | None) -> datetime | None:
-    if not value:
-        return None
-    try:
-        return datetime.fromisoformat(value.replace("Z", "+00:00"))
-    except ValueError:
-        return None
-
-
-def _extract_makerworld_category(url: str) -> str:
-    """Pulls a category slug (e.g. "900-3d-printer") out of a configured MakerWorld list URL
-    like .../3d-models/900-3d-printer, if the user pointed the source at one category instead
-    of the full "all models" listing. Empty string means "no category filter"."""
-    match = re.search(r"/3d-models/([\w-]+)", url)
-    return match.group(1) if match else ""
-
-
-def fetch_makerworld_listing(
-    url: str,
-    hours: int,
-    max_count: int | None = None,
-    progress_callback: Callable[[int], None] | None = None,
-    cancel_check: Callable[[], bool] | None = None,
-    status_callback: Callable[[str], None] | None = None,
-) -> list[tuple[str, str, str]]:
-    """Fetches MakerWorld's newest-models results directly from its search JSON API - no
-    browser needed at all, this endpoint is plain, unauthenticated JSON - and stops as soon as
-    a result's own createTime falls outside the requested `hours` window.
-
-    MakerWorld's search backend caps "total" at 10000 regardless of how many models actually
-    match a query, so an undated "give me everything newer than X" scan could in principle
-    have to page through up to 10000 candidates just to find where the cutoff falls.
-    designCreateSince (whole days, counted from the API side, with a +1 day safety margin
-    here to avoid ever narrowing it TOO much) shrinks that server-side first; the exact
-    hour-level cutoff is still enforced client-side against each result's own createTime, so
-    designCreateSince only needs to be roughly right, never exact.
-    """
-    cutoff = datetime.now(timezone.utc) - timedelta(hours=hours)
-    since_days = max(1, math.ceil(hours / 24) + 1)
-    category = _extract_makerworld_category(url)
-    models: dict[str, tuple[str, str, str]] = {}
-    limit = 100
-    offset = 0
-    while True:
-        if cancel_check and cancel_check():
-            break
-        query = urllib.parse.urlencode(
-            {
-                "orderBy": "newUploads",
-                "categories": category,
-                "designCreateSince": since_days,
-                "entrance": "list",
-                "designType": 0,
-                "limit": limit,
-                "offset": offset,
-            }
-        )
-        request = urllib.request.Request(
-            f"https://makerworld.com/api/v1/search-service/select/design2?{query}",
-            headers={"User-Agent": USER_AGENT, "Accept": "application/json"},
-        )
-        try:
-            with urllib.request.urlopen(request, timeout=20) as response:
-                data = json.loads(response.read())
-        except (OSError, ValueError) as error:
-            raise ValueError("A MakerWorld lista nem töltődött be időben.") from error
-        hits = data.get("hits") or []
-        if not hits:
-            break
-        reached_cutoff = False
-        for hit in hits:
-            created_at = _parse_makerworld_time(hit.get("createTime"))
-            if created_at is None or created_at < cutoff:
-                reached_cutoff = True
-                break
-            model_id = hit.get("id")
-            if not model_id:
-                continue
-            slug = hit.get("slug") or ""
-            model_url = f"https://makerworld.com/en/models/{model_id}-{slug}" if slug else f"https://makerworld.com/en/models/{model_id}"
-            if model_url in models:
-                continue
-            title = hit.get("title") or hit.get("titleTranslated") or ""
-            image_url = hit.get("cover") or ""
-            # Stored alongside the record so the actual reason a scan stopped where it did
-            # stays visible later, not just implied by "created_at" (when *we* saved it).
-            model_created_at = created_at.astimezone().strftime("%Y-%m-%d %H:%M:%S")
-            models[model_url] = (model_url, title, image_url, model_created_at)
-            if progress_callback:
-                progress_callback(len(models))
-            if max_count and len(models) >= max_count:
-                return list(models.values())
-        if reached_cutoff:
-            break
-        offset += limit
-        total = data.get("total") or 0
-        if offset >= total:
-            break
-        if offset >= 10_000:
-            if status_callback:
-                status_callback(
-                    "A MakerWorld kereső 10 000 találat fölött nem ad több eredményt - "
-                    "néhány, az időablak szélén lévő tétel emiatt kimaradhatott."
-                )
-            break
-    return list(models.values())
-
-
-def minimize_browser_window(context, page) -> None:
-    """Minimizes the visible automation window via the CDP Browser domain.
-
-    The --start-minimized launch arg looks like the natural way to do this, but Playwright
-    itself repositions/resizes the window right after launch (to its own default bounds),
-    which silently overrides the flag - the window always ends up "normal" regardless.
-    Asking Chrome DevTools Protocol directly to minimize, after the context already exists,
-    actually sticks. Best-effort: a failure here should never abort the scan itself.
-    """
-    try:
-        cdp_session = context.new_cdp_session(page)
-        window = cdp_session.send("Browser.getWindowForTarget")
-        cdp_session.send("Browser.setWindowBounds", {"windowId": window["windowId"], "bounds": {"windowState": "minimized"}})
-    except Exception:
-        pass
-
-
-def ensure_browser_profile_dir(new_dir: Path, legacy_dir: Path) -> Path:
-    """Resolves the persistent browser profile directory to actually launch with.
-
-    Prefers new_dir (under 3DSModelScope/browser_profiles). If it doesn't exist yet but an
-    older build's profile is sitting at legacy_dir, copies it over first so an already-solved
-    Cloudflare challenge isn't lost on upgrade. legacy_dir is left in place (copied, not
-    moved) so downgrading to an older build still finds its cookies there too. If neither
-    exists, new_dir is created fresh and Playwright starts a brand new profile in it.
-    """
-    if new_dir.exists() and any(new_dir.iterdir()):
-        return new_dir
-    if legacy_dir.exists() and any(legacy_dir.iterdir()):
-        new_dir.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copytree(legacy_dir, new_dir, dirs_exist_ok=True)
-        return new_dir
-    new_dir.mkdir(parents=True, exist_ok=True)
-    return new_dir
-
-
-def wait_out_cloudflare_challenge(
-    page,
-    status_callback: Callable[[str], None] | None = None,
-    cancel_check: Callable[[], bool] | None = None,
-    max_attempts: int = 12,
-    wait_ms: int = 5_000,
-    reload_page: bool = False,
-    content_selector: str = 'a[href*="/model/"]',
-) -> bool:
-    """Polls a Cloudflare interstitial until it clears on its own.
-
-    This only waits out the passive/managed challenge that a normal browser also clears
-    automatically after a few seconds - it never attempts to click a verification checkbox
-    or otherwise defeat an interactive challenge. When reload_page is set, a single manual
-    reload is tried halfway through the wait, since that sometimes nudges the passive
-    challenge into completing where just waiting does not.
-
-    Whether the challenge is still showing is judged by the absence of content_selector,
-    not by the interstitial's title text - Cloudflare serves that title translated into the
-    browser's own language ("Egy pillanat..." in Hungarian, for example), so matching only
-    the English "Just a moment"/"Checking your browser" strings silently failed to detect
-    the challenge at all on a non-English browser.
-    """
-    def is_challenge_showing() -> bool:
-        # Cloudflare's own auto-reload can momentarily destroy the page's execution context;
-        # treat that as "still on the challenge" rather than letting it blow up the whole scan.
-        try:
-            return page.locator(content_selector).count() == 0
-        except Exception:
-            return True
-
-    reloaded = False
-    for attempt in range(max_attempts):
-        if cancel_check and cancel_check():
-            return False
-        if not is_challenge_showing():
-            return True
-        if reload_page and not reloaded and attempt == max_attempts // 2:
-            reloaded = True
-            try:
-                page.reload(wait_until="domcontentloaded", timeout=20_000)
-            except Exception:
-                pass
-        if status_callback:
-            status_callback(f"Cloudflare ellenőrzés, várakozás... ({attempt + 1}/{max_attempts})")
-        try:
-            page.wait_for_timeout(wait_ms)
-        except Exception:
-            pass
-    return not is_challenge_showing()
-
-
-def fetch_printables_listing(
-    url: str,
-    max_count: int | None = None,
-    unchanged_round_limit: int = 3,
-    progress_callback: Callable[[int], None] | None = None,
-    cancel_check: Callable[[], bool] | None = None,
-    status_callback: Callable[[str], None] | None = None,
-) -> list[tuple[str, str, str]]:
-    """Loads Printables' listing page (waiting out any Cloudflare interstitial first) and
-    returns unique model cards. Kept fully separate from fetch_makerworld_listing so that
-    function never needs to change.
-
-    Runs headed (a visible window), not headless: Cloudflare's managed challenge never
-    cleared in headless testing regardless of settings, while a genuinely visible window -
-    via Patchright, which patches out the CDP-level automation fingerprint plain Playwright
-    leaks - usually clears it on its own within seconds. If it doesn't, the window stays open
-    and interactive, so the user can just click through it there like a normal browser tab."""
-    models: dict[str, tuple[str, str, str]] = {}
-    profile_dir = ensure_browser_profile_dir(PRINTABLES_PROFILE_DIR, LEGACY_PRINTABLES_PROFILE_DIR)
-    with sync_patchright() as playwright:
-        # A persistent profile keeps cookies (incl. Cloudflare's clearance cookie) between runs,
-        # so a challenge passed once usually doesn't need to be passed again for a while.
-        # Deliberately no custom user_agent/viewport/headers here: a mismatch between a forced
-        # UA string and the real installed Edge's actual version is itself a bot signal, and
-        # testing found the plain, unmodified profile clears the challenge more reliably.
-        context = playwright.chromium.launch_persistent_context(
-            str(profile_dir),
-            channel="msedge",
-            headless=False,
-        )
-        page = context.pages[0] if context.pages else context.new_page()
-        # Still a real, visible window (required to pass Cloudflare) - just minimized so it
-        # doesn't steal focus or clutter the screen during a normal run.
-        minimize_browser_window(context, page)
-        try:
-            page.goto(url, wait_until="domcontentloaded", timeout=45_000)
-            if status_callback:
-                status_callback("Cloudflare ellenőrzés folyamatban - ha kell, kattints át rajta a felugró ablakban...")
-            if not wait_out_cloudflare_challenge(page, status_callback, cancel_check, max_attempts=24, reload_page=True):
-                if cancel_check and cancel_check():
-                    return []
-                raise ValueError("A Printables Cloudflare-ellenőrzése nem oldódott fel időben. Próbáld újra kicsit később.")
-            try:
-                page.get_by_role("button", name=re.compile(r"(Accept|Elfogad)", re.IGNORECASE)).click(timeout=5_000)
-            except PatchrightTimeoutError:
-                pass
-            page.wait_for_selector('a[href*="/model/"]', timeout=30_000)
-            previous_count = 0
-            no_growth_rounds = 0
-            for _ in range(20):
-                if cancel_check and cancel_check():
-                    break
-                cards = page.locator('a[href*="/model/"]')
-                for card in cards.all():
-                    href = card.get_attribute("href") or ""
-                    if "/model/" not in href:
-                        continue
-                    # Each card has two <img> tags: a permanent base64 blur placeholder first,
-                    # then the real thumbnail - .last skips past the placeholder to the real one.
-                    image = card.locator("img").last
-                    has_image = image.count() > 0
-                    image_url = ""
-                    if has_image:
-                        image_url = image.get_attribute("src") or image.get_attribute("data-src") or ""
-                        if image_url.startswith("data:"):
-                            image_url = ""
-                        image_url = urllib.parse.urljoin(page.url, image_url) if image_url else ""
-                    title = (image.get_attribute("alt") or "").strip() if has_image else card.inner_text().strip()
-                    if not title:
-                        continue
-                    model_url = urllib.parse.urljoin(page.url, href).split("?")[0]
-                    if model_url in models:
-                        continue
-                    # Printables' card grid doesn't expose a per-model creation timestamp the
-                    # way MakerWorld's search API does, so this stays blank here.
-                    models[model_url] = (model_url, title, image_url, "")
-                    if progress_callback:
-                        progress_callback(len(models))
-                    if max_count and len(models) >= max_count:
-                        return list(models.values())
-                if len(models) == previous_count:
-                    no_growth_rounds += 1
-                    if no_growth_rounds >= unchanged_round_limit:
-                        break
-                else:
-                    no_growth_rounds = 0
-                previous_count = len(models)
-                page.mouse.wheel(0, 15000)
-                page.wait_for_timeout(1800)
-        except PatchrightTimeoutError as error:
-            raise ValueError("A Printables lista nem töltődött be időben.") from error
-        finally:
-            context.close()
-    return list(models.values())
-
-
-_THING_HREF_PATTERN = re.compile(r"^/thing:\d+$")
-
-
-def _with_page(url: str, page_number: int) -> str:
-    """Sets/overrides the "page" query parameter of a listing URL, keeping every other
-    parameter (per_page, sort, type, q, ...) exactly as the user configured them."""
-    parts = urllib.parse.urlsplit(url)
-    query = urllib.parse.parse_qs(parts.query, keep_blank_values=True)
-    query["page"] = [str(page_number)]
-    new_query = urllib.parse.urlencode(query, doseq=True)
-    return urllib.parse.urlunsplit((parts.scheme, parts.netloc, parts.path, new_query, parts.fragment))
-
-
-def fetch_thingiverse_listing(
-    url: str,
-    max_count: int | None = None,
-    unchanged_round_limit: int = 3,
-    progress_callback: Callable[[int], None] | None = None,
-    cancel_check: Callable[[], bool] | None = None,
-    status_callback: Callable[[str], None] | None = None,
-) -> list[tuple[str, str, str]]:
-    """Loads Thingiverse search result pages (page=1, 2, 3, ...) and returns unique thing
-    cards. Unlike MakerWorld/Printables, Thingiverse's search is paged rather than an
-    infinite-scroll list, so "loading more" means navigating to the next page= value instead
-    of scrolling - but it sits behind the same kind of Cloudflare managed challenge, so it
-    reuses the same headed-Patchright approach as Printables."""
-    models: dict[str, tuple[str, str, str]] = {}
-    profile_dir = ensure_browser_profile_dir(THINGIVERSE_PROFILE_DIR, LEGACY_THINGIVERSE_PROFILE_DIR)
-    start_page = int(urllib.parse.parse_qs(urllib.parse.urlsplit(url).query).get("page", ["1"])[0] or "1")
-    with sync_patchright() as playwright:
-        context = playwright.chromium.launch_persistent_context(
-            str(profile_dir),
-            channel="msedge",
-            headless=False,
-        )
-        page = context.pages[0] if context.pages else context.new_page()
-        # Still a real, visible window (required to pass Cloudflare) - just minimized so it
-        # doesn't steal focus or clutter the screen during a normal run.
-        minimize_browser_window(context, page)
-        try:
-            no_growth_rounds = 0
-            page_number = start_page
-            while True:
-                if cancel_check and cancel_check():
-                    break
-                page.goto(_with_page(url, page_number), wait_until="domcontentloaded", timeout=45_000)
-                if page_number == start_page and status_callback:
-                    status_callback("Cloudflare ellenőrzés folyamatban - ha kell, kattints át rajta a felugró ablakban...")
-                if not wait_out_cloudflare_challenge(
-                    page, status_callback, cancel_check, max_attempts=24, reload_page=True,
-                    content_selector='.item-card-container a[href^="/thing:"]',
-                ):
-                    if cancel_check and cancel_check():
-                        break
-                    raise ValueError("A Thingiverse Cloudflare-ellenőrzése nem oldódott fel időben. Próbáld újra kicsit később.")
-                cards = page.locator(".item-card-container")
-                before_count = len(models)
-                for card in cards.all():
-                    # Each card has several <a href="/thing:...">: one just wrapping the
-                    # thumbnail image (no text) and one carrying the visible title text -
-                    # the title-specific class picks the right one directly.
-                    link = card.locator("a.item-card-header__title").first
-                    if link.count() == 0:
-                        continue
-                    href = link.get_attribute("href") or ""
-                    if not _THING_HREF_PATTERN.match(href):
-                        continue
-                    title = link.inner_text().strip()
-                    if not title:
-                        continue
-                    model_url = urllib.parse.urljoin(page.url, href)
-                    if model_url in models:
-                        continue
-                    image = card.locator("img").first
-                    image_url = image.get_attribute("src") or "" if image.count() > 0 else ""
-                    if image_url:
-                        image_url = urllib.parse.urljoin(page.url, image_url)
-                    # Thingiverse's search card doesn't expose a per-model creation timestamp,
-                    # unlike MakerWorld's search API, so this stays blank here.
-                    models[model_url] = (model_url, title, image_url, "")
-                    if progress_callback:
-                        progress_callback(len(models))
-                    if max_count and len(models) >= max_count:
-                        return list(models.values())
-                if len(models) == before_count:
-                    # An empty page (no thing cards at all) means there simply are no more
-                    # results to page through - stop right away instead of waiting out the
-                    # unchanged-round limit, which is meant for "these are all already saved".
-                    if cards.count() == 0:
-                        break
-                    no_growth_rounds += 1
-                    if no_growth_rounds >= unchanged_round_limit:
-                        break
-                else:
-                    no_growth_rounds = 0
-                page_number += 1
-        except PatchrightTimeoutError as error:
-            raise ValueError("A Thingiverse lista nem töltődött be időben.") from error
-        finally:
-            context.close()
-    return list(models.values())
+# MakerWorld/Printables/Thingiverse listing fetchers live in sources/ (one module per
+# site, see sources/__init__.py) - dispatched to by parser_type in fetch_and_add below.
 
 
 class Database:
@@ -1974,10 +1582,11 @@ class App(tk.Tk):
             self.database.set_source_last_fetched(source["id"], now_text())
             self.after(0, self.update_last_run_info)
             if source["parser_type"] == "makerworld":
-                # MakerWorld's own search JSON API is used directly (see fetch_makerworld_listing's
-                # docstring) - no browser needed, and it stops as soon as it finds a model older
-                # than `hours`, rather than needing a fixed max_count to ever stop at all.
-                models = fetch_makerworld_listing(
+                # MakerWorld's own search JSON API is used directly (see
+                # sources/makerworld.py's fetch_listing docstring) - no browser needed, and it
+                # stops as soon as it finds a model older than `hours`, rather than needing a
+                # fixed max_count to ever stop at all.
+                models = makerworld.fetch_listing(
                     url,
                     hours,
                     max_count,
@@ -2028,13 +1637,13 @@ class App(tk.Tk):
                 self.after(0, lambda: self.add_finished(added_count, len(models), cancelled=cancelled))
                 return
             if source["parser_type"] == "printables":
-                # Printables sits behind a Cloudflare managed challenge (see
-                # fetch_printables_listing's own docstring for how that's handled); once past
-                # it, gathering the listing works the same way as MakerWorld's.
-                models = fetch_printables_listing(
+                # Printables' own search API (see sources/printables.py's fetch_listing
+                # docstring) is used directly, same approach as MakerWorld: no browser, stops
+                # at the date cutoff instead of needing max_count to ever stop at all.
+                models = printables.fetch_listing(
                     url,
+                    hours,
                     max_count,
-                    unchanged_round_limit,
                     lambda count: self.report_progress(count, "Modellek felderítve"),
                     cancel_check=self.cancel_event.is_set,
                     status_callback=self.report_status,
@@ -2083,9 +1692,12 @@ class App(tk.Tk):
                 return
             if source["parser_type"] == "thingiverse":
                 # Thingiverse pages through numbered search-result pages instead of infinite
-                # scroll, but sits behind the same kind of Cloudflare check as Printables.
-                models = fetch_thingiverse_listing(
+                # scroll, and (unlike MakerWorld/Printables) still needs a real, Cloudflare-
+                # clearing browser window - see sources/thingiverse.py.
+                models = thingiverse.fetch_listing(
                     url,
+                    THINGIVERSE_PROFILE_DIR,
+                    LEGACY_THINGIVERSE_PROFILE_DIR,
                     max_count,
                     unchanged_round_limit,
                     lambda count: self.report_progress(count, "Modellek felderítve"),
@@ -2136,8 +1748,10 @@ class App(tk.Tk):
                 return
             # Fallback for any source that isn't one of the three listing scrapers above: the
             # URL itself is treated as a single page to record, not a list to crawl. hours is
-            # deliberately unused here (and everywhere above) - it's only ever a suggestion
-            # shown to the user; the real duplicate guard is record_exists() checking the URL.
+            # unused here (there's just the one page, nothing to cut off by date) and in the
+            # Thingiverse branch above (no per-model date available there to compare against) -
+            # MakerWorld and Printables are the only two that actually use it, to cut their
+            # search results off at the right age instead of relying on max_count/record_exists.
             title, image_url = fetch_page(url, source["parser_type"])
             record_id = self.database.add(url, title, image_url, source["id"])
             if image_url:

@@ -5,7 +5,20 @@
       "Bash(rm -rf \"/c/Users/RPDNAG~1/AppData/Local/Temp/claude/c--Users--rp-dNagyk-kesi-Documents-Python-3DSites/00f1a6d5-25e9-42a4-bed4-0a5c20bf38f6/scratchpad/mw_pipeline_test\")",
       "Bash(mkdir -p \"/c/Users/RPDNAG~1/AppData/Local/Temp/claude/c--Users--rp-dNagyk-kesi-Documents-Python-3DSites/00f1a6d5-25e9-42a4-bed4-0a5c20bf38f6/scratchpad/mw_pipeline_test\")",
       "Bash(rm -f scratch_gql_req_0.json scratch_gql_resp_0.json)",
-      "Bash(rm -f scratch_printables_model.html)"
+      "Bash(rm -f scratch_printables_model.html)",
+      "Bash(rm -rf \"/c/Users/RPDNAG~1/AppData/Local/Temp/claude/c--Users--rp-dNagyk-kesi-Documents-Python-3DSites/00f1a6d5-25e9-42a4-bed4-0a5c20bf38f6/scratchpad/printables_pipeline_test\")",
+      "Bash(mkdir -p \"/c/Users/RPDNAG~1/AppData/Local/Temp/claude/c--Users--rp-dNagyk-kesi-Documents-Python-3DSites/00f1a6d5-25e9-42a4-bed4-0a5c20bf38f6/scratchpad/printables_pipeline_test\")",
+      "Bash(mkdir -p \"C:\\\\Users\\\\ÁrpádNagykékesi\\\\Documents\\\\Python\\\\3DSites\\\\sources\")",
+      "Bash(python -m py_compile app.py sources/__init__.py sources/common.py sources/makerworld.py sources/printables.py sources/thingiverse.py)",
+      "Bash(python -c 'import ast,sys *)",
+      "Bash(python -c \"import app; print\\('IMPORT_OK', app.makerworld, app.printables, app.thingiverse\\)\")",
+      "Bash(python -m pyflakes app.py sources/*.py)",
+      "Bash(python -m pip install --quiet pyflakes)",
+      "Bash(python -m pyflakes app.py sources/__init__.py sources/common.py sources/makerworld.py sources/printables.py sources/thingiverse.py)",
+      "Bash(python -c ' *)"
+    ],
+    "additionalDirectories": [
+      "C:\\Users\\ÁrpádNagykékesi\\Documents\\Python\\3DSites"
     ]
   }
 }
