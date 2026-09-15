@@ -29,13 +29,15 @@ DB_PATH = APP_DATA_DIR / "3DModelScope.db"
 # In a PyInstaller onefile build, bundled data (added via --add-data) is unpacked to a temp
 # directory at runtime (sys._MEIPASS), not next to the exe, so the icon is looked up there.
 ICON_PATH = Path(getattr(sys, "_MEIPASS", APP_DIR)) / "app_icon.ico" if getattr(sys, "frozen", False) else APP_DIR / "app_icon.ico"
-# Persistent browser profile for Thingiverse (still Cloudflare-protected, unlike MakerWorld's
-# and Printables' search APIs, which turned out to need no browser at all - see sources/):
+# Persistent browser profiles for MakerWorld and Thingiverse, both Cloudflare-protected
+# (Printables' search API is the only one left that needs no browser at all - see sources/):
 # keeps the clearance cookie between runs, so once the interstitial is passed once, later scans
-# usually skip it entirely. LEGACY_THINGIVERSE_PROFILE_DIR is where older builds put it, and
-# sources.thingiverse.ensure_profile_dir migrates a profile found there so upgrading doesn't
-# throw away an already-cleared cookie.
+# usually skip it entirely. LEGACY_THINGIVERSE_PROFILE_DIR is where older builds put that one
+# (MakerWorld's browser use is new, so it has no legacy location to migrate from), and
+# sources.common.ensure_profile_dir migrates a profile found there so upgrading doesn't throw
+# away an already-cleared cookie.
 BROWSER_PROFILES_DIR = APP_DATA_DIR / "browser_profiles"
+MAKERWORLD_PROFILE_DIR = BROWSER_PROFILES_DIR / "makerworld"
 THINGIVERSE_PROFILE_DIR = BROWSER_PROFILES_DIR / "thingiverse"
 LEGACY_THINGIVERSE_PROFILE_DIR = APP_DIR / "thingiverse_browser_profile"
 SOURCE_SEEDS = (
@@ -103,6 +105,17 @@ APP_VERSION = "1.0"
 # Shown in the Információ dialog, newest first. Add one line here whenever a user-visible
 # change ships, so the in-app changelog stays a real record instead of drifting from reality.
 CHANGELOG = """\
+1.0 (2026-09-15)
+  - Thingiverse: minden találatnál megnyílik a modell saját oldala is, hogy a rajta szereplő
+    közzétételi dátumot (nap pontossággal) kiolvassuk - ez most már a rekord "Létrehozva"
+    mezőjében tárolódik, és a "Visszamenőleges órák" is ez alapján állítja meg a beolvasást,
+    ugyanúgy, mint MakerWorld-nél és Printables-nél. Ára van: modellenként egy extra
+    oldalbetöltéssel jár, így a Thingiverse-beolvasás érezhetően lassabb lett.
+  - MakerWorld beolvasás visszaállítva böngészős (Cloudflare-átjutós) módra: a MakerWorld
+    időközben Cloudflare-védelem mögé tette a saját kereső-API-ját is, ami a korábbi,
+    közvetlen JSON-lekérdezést 403-mal kezdte elutasítani. A dátum szerinti megállás
+    ("Visszamenőleges órák") és a lapozási logika változatlan maradt, csak most már - a
+    Thingiverse-hez hasonlóan - egy látható, minimalizált böngészőablakon keresztül fut.
 1.0 (2026-09-11)
   - MakerWorld és Printables lecserélve a saját, nyilvános kereső-API-jukra (böngésző és
     Cloudflare-kerülés nélkül, közvetlen JSON-lekérdezéssel): mindkettő pontos dátum szerint
@@ -148,20 +161,24 @@ HELP_TEXT = """\
 ADATBETÖLTÉS (bal oldali panel)
   1. Válaszd ki a forrást a legördülő listából (ha egy egyedi, konkrét URL-t akarsz beolvasni,
      állítsd be a "Beállítások" fülön az "Egyéb" profil Lista URL-jét erre az URL-re).
-  2. Állítsd be, hány órára visszamenőleg keress (ez csak tájékoztató javaslat, nem szűr - a
-     duplikátumokat az teszi ki, hogy egy URL már szerepel-e az adatbázisban).
+  2. Állítsd be, hány órára visszamenőleg keress. MakerWorld, Printables és Thingiverse
+     esetén ez tényleges megállási határ: a beolvasás a modell saját közzétételi dátuma
+     alapján áll meg, amint egy találat ennél régebbi (Thingiverse-nél csak nap, nem óra
+     pontossággal, mivel a modell oldala csak dátumot mutat, időpontot nem). Az "Egyéb"
+     forrásnál nincs ilyen dátum, ott csak tájékoztató jellegű - a duplikátumokat mindenhol
+     az teszi ki, hogy egy URL már szerepel-e az adatbázisban.
   3. Opcionálisan add meg a maximális darabszámot, ha nem szeretnéd a teljes listát bejárni.
   4. Az "Adatbetöltés" gomb elindítja a beolvasást; a folyamat állapota (melyik modell, melyik
      lépés: rekord készítése / kép másolása / kész) a folyamatablakban és a státusz-sorban is
      látszik. "Megszakítás"-kor választhatsz, hogy az addig mentett új rekordokat megtartod
      vagy törlöd.
 
-CLOUDFLARE-VÉDETT FORRÁS (Thingiverse)
-  Ez az oldal Cloudflare "biztonsági ellenőrzést" mutathat. A program ilyenkor egy látható,
-  de minimalizált böngészőablakot nyit - a legtöbbször ez magától, pár másodperc alatt
-  lezajlik. Ha mégsem, állítsd vissza az ablakot a tálcáról, és kattints át rajta te magad;
-  utána a program automatikusan folytatja a beolvasást. (A MakerWorld és a Printables saját
-  belső keresőAPI-jukon keresztül, böngésző nélkül, közvetlenül töltődnek be.)
+CLOUDFLARE-VÉDETT FORRÁSOK (MakerWorld, Thingiverse)
+  Ezek az oldalak Cloudflare "biztonsági ellenőrzést" mutathatnak. A program ilyenkor egy
+  látható, de minimalizált böngészőablakot nyit - a legtöbbször ez magától, pár másodperc
+  alatt lezajlik. Ha mégsem, állítsd vissza az ablakot a tálcáról, és kattints át rajta te
+  magad; utána a program automatikusan folytatja a beolvasást. (A Printables saját belső
+  keresőAPI-ján keresztül, böngésző nélkül, közvetlenül töltődik be.)
 
 REKORDOK FÜL
   A "Rekordok betöltése" tölti be a listát (a Beállításokban megadott limittel lapozva, ha be
@@ -434,8 +451,10 @@ class Database:
 
     def add(self, url: str, title: str, image_url: str, source_id: int, model_created_at: str = "") -> int:
         # "Létrehozva" is the model's own creation date on the source site when we have one
-        # (MakerWorld) - only sources with no such date available fall back to "when we saved
-        # it" (now), since that's the closest information we actually have for those.
+        # (MakerWorld, Printables, Thingiverse) - the "Egyéb" single-page fallback, or the rare
+        # Thingiverse model whose date couldn't be read (see sources/thingiverse.py's
+        # fetch_listing docstring), falls back to "when we saved it" (now) instead, since
+        # that's the closest information we actually have for those.
         created_at = model_created_at or now_text()
         cursor = self.connection.execute(
             "INSERT INTO records (url, title, image_url, image_path, source_id, created_at, model_created_at) VALUES (?, ?, ?, '', ?, ?, ?)",
@@ -1582,12 +1601,13 @@ class App(tk.Tk):
             self.database.set_source_last_fetched(source["id"], now_text())
             self.after(0, self.update_last_run_info)
             if source["parser_type"] == "makerworld":
-                # MakerWorld's own search JSON API is used directly (see
-                # sources/makerworld.py's fetch_listing docstring) - no browser needed, and it
-                # stops as soon as it finds a model older than `hours`, rather than needing a
-                # fixed max_count to ever stop at all.
+                # MakerWorld's search JSON API now sits behind Cloudflare too (see
+                # sources/makerworld.py's fetch_listing docstring), so this goes through a
+                # browser window like Thingiverse - but it still stops as soon as it finds a
+                # model older than `hours`, rather than needing a fixed max_count to ever stop.
                 models = makerworld.fetch_listing(
                     url,
+                    MAKERWORLD_PROFILE_DIR,
                     hours,
                     max_count,
                     lambda count: self.report_progress(count, "Modellek felderítve"),
@@ -1693,11 +1713,14 @@ class App(tk.Tk):
             if source["parser_type"] == "thingiverse":
                 # Thingiverse pages through numbered search-result pages instead of infinite
                 # scroll, and (unlike MakerWorld/Printables) still needs a real, Cloudflare-
-                # clearing browser window - see sources/thingiverse.py.
+                # clearing browser window; it also opens each thing's own page to read its
+                # publish date (day precision only) and stops at the `hours` cutoff just like
+                # the other two - see sources/thingiverse.py's fetch_listing docstring.
                 models = thingiverse.fetch_listing(
                     url,
                     THINGIVERSE_PROFILE_DIR,
                     LEGACY_THINGIVERSE_PROFILE_DIR,
+                    hours,
                     max_count,
                     unchanged_round_limit,
                     lambda count: self.report_progress(count, "Modellek felderítve"),
@@ -1746,11 +1769,10 @@ class App(tk.Tk):
                     added_count = 0
                 self.after(0, lambda: self.add_finished(added_count, len(models), cancelled=cancelled))
                 return
-            # Fallback for any source that isn't one of the three listing scrapers above: the
-            # URL itself is treated as a single page to record, not a list to crawl. hours is
-            # unused here (there's just the one page, nothing to cut off by date) and in the
-            # Thingiverse branch above (no per-model date available there to compare against) -
-            # MakerWorld and Printables are the only two that actually use it, to cut their
+            # Fallback for any source that isn't one of the three listing scrapers above (the
+            # "Egyéb" profile): the URL itself is treated as a single page to record, not a
+            # list to crawl - hours is unused here, there's just the one page and nothing to
+            # cut off by date. All three listing scrapers above do use it now, to cut their
             # search results off at the right age instead of relying on max_count/record_exists.
             title, image_url = fetch_page(url, source["parser_type"])
             record_id = self.database.add(url, title, image_url, source["id"])

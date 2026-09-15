@@ -79,7 +79,7 @@ def fetch_listing(
         try:
             data = urlopen_json(request)
         except (OSError, ValueError) as error:
-            raise ValueError("A Printables lista nem töltődött be időben.") from error
+            raise ValueError(f"A Printables lista nem töltődött be: {error}") from error
         if "errors" in data:
             raise ValueError(f"A Printables API hibát adott vissza: {data['errors']}")
         result = (data.get("data") or {}).get("models") or {}

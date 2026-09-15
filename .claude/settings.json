@@ -15,10 +15,18 @@
       "Bash(python -m pyflakes app.py sources/*.py)",
       "Bash(python -m pip install --quiet pyflakes)",
       "Bash(python -m pyflakes app.py sources/__init__.py sources/common.py sources/makerworld.py sources/printables.py sources/thingiverse.py)",
-      "Bash(python -c ' *)"
+      "Bash(python -c ' *)",
+      "Bash(python -m py_compile app.py sources/common.py sources/makerworld.py sources/printables.py sources/thingiverse.py)",
+      "Bash(rm -rf \"C:\\\\Users\\\\RPDNAG~1\\\\AppData\\\\Local\\\\Temp\\\\tmprblmgzrw\")",
+      "Bash(python -m py_compile app.py sources/thingiverse.py)",
+      "Bash(python3 -c ' *)",
+      "Bash(git status *)",
+      "Bash(python -m py_compile sources/thingiverse.py)",
+      "Bash(python -m pyflakes sources/thingiverse.py app.py)"
     ],
     "additionalDirectories": [
-      "C:\\Users\\ÁrpádNagykékesi\\Documents\\Python\\3DSites"
+      "C:\\Users\\ÁrpádNagykékesi\\Documents\\Python\\3DSites",
+      "C:\\Users\\RPDNAG~1\\AppData\\Local\\Temp\\tmprblmgzrw"
     ]
   }
 }
