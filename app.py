@@ -8,12 +8,13 @@ import threading
 import urllib.error
 import urllib.parse
 import urllib.request
+import webbrowser
 from datetime import datetime
 from html.parser import HTMLParser
 from io import BytesIO
 from pathlib import Path
 import tkinter as tk
-from tkinter import filedialog, messagebox, ttk
+from tkinter import filedialog, font as tkfont, messagebox, ttk
 
 from PIL import Image, ImageTk
 
@@ -529,6 +530,7 @@ class Database:
         offset: int = 0,
         include_viewed: bool = True,
         only_interested: bool = False,
+        only_imported: bool = False,
     ) -> list[sqlite3.Row]:
         query = "SELECT records.id, records.url, records.title, records.image_url, records.image_path, records.source_id, records.created_at, records.model_created_at, records.viewed, records.interested, records.not_interested, records.imported, records.viewed_at, records.marked_at, sources.name AS source_name FROM records LEFT JOIN sources ON sources.id=records.source_id"
         conditions = []
@@ -537,6 +539,8 @@ class Database:
             conditions.append("records.viewed=0")
         if only_interested:
             conditions.append("records.interested=1")
+        if only_imported:
+            conditions.append("records.imported=1")
         if conditions:
             query += " WHERE " + " AND ".join(conditions)
         query += " ORDER BY records.id DESC"
@@ -558,6 +562,44 @@ class Database:
             (int(viewed), int(interested), int(not_interested), int(viewed), timestamp, timestamp, record_id),
         )
         self.connection.commit()
+
+    # Saves just the "Érdekel" choice for one record, without touching viewed/viewed_at - used
+    # by the review window to persist a tile's checkbox the moment it's toggled, while the
+    # record itself is only marked "megnézett" once the page is advanced past or the window
+    # closes (see ReviewWindow.mark_batch_viewed).
+    def update_interested(self, record_id: int, interested: bool) -> None:
+        self.connection.execute(
+            "UPDATE records SET interested=?, not_interested=?, marked_at=? WHERE id=?",
+            (int(interested), int(not interested), now_text(), record_id),
+        )
+        self.connection.commit()
+
+    # Marks a batch of records as viewed, preserving whatever interested/not_interested value
+    # is already stored for each (already saved by update_interested as their checkboxes were
+    # toggled).
+    def mark_viewed(self, record_ids: list[int]) -> None:
+        if not record_ids:
+            return
+        timestamp = now_text()
+        self.connection.executemany(
+            "UPDATE records SET viewed=1, viewed_at=COALESCE(viewed_at, ?), marked_at=? WHERE id=?",
+            [(timestamp, timestamp, record_id) for record_id in record_ids],
+        )
+        self.connection.commit()
+
+    # Undoes mark_viewed for the one page the review window lets the user step back to.
+    def mark_unviewed(self, record_ids: list[int]) -> None:
+        if not record_ids:
+            return
+        self.connection.executemany(
+            "UPDATE records SET viewed=0 WHERE id=?", [(record_id,) for record_id in record_ids]
+        )
+        self.connection.commit()
+
+    # Total records not yet marked "megnézett" - shown at the bottom of the review window so
+    # the user can see how much of the backlog is left.
+    def remaining_unviewed_count(self) -> int:
+        return int(self.connection.execute("SELECT COUNT(*) FROM records WHERE viewed=0").fetchone()[0])
 
     def delete(self, record_id: int) -> None:
         row = self.connection.execute("SELECT image_path FROM records WHERE id=?", (record_id,)).fetchone()
@@ -637,6 +679,425 @@ class ToolTip:
             self.tip_window = None
 
 
+# "Átnézés" grid review window: tile-count choice -> (columns, rows), the sizes named in
+# the feature request (3x1, 3x2, 3x3, 4x3, 4x4).
+REVIEW_TILE_COUNT_GRID = {3: (3, 1), 6: (3, 2), 9: (3, 3), 12: (4, 3), 16: (4, 4)}
+REVIEW_TILE_MIN_IMAGE_WIDTH = 90
+REVIEW_TILE_MIN_IMAGE_HEIGHT = 50
+# Vertical room a tile's title (up to 2 lines) + date/interest row + paddings take up below the
+# image - subtracted from each row's share of the window's height so the image box, plus this
+# fixed text block, together exactly fill the row, with no scrolling ever needed.
+REVIEW_TILE_TEXT_HEIGHT = 74
+
+
+class ImageViewerWindow(tk.Toplevel):
+    """A bigger, zoomable view of one image - opened by clicking a review tile's thumbnail,
+    since the tile itself is deliberately small and (for non-square images) lightly cropped."""
+
+    def __init__(self, master: tk.Misc, image_path: str, title: str, colors: dict[str, str], database: "Database") -> None:
+        super().__init__(master)
+        self.database = database
+        self.image_path = image_path
+        self.zoom = 1.0
+        self.photo: ImageTk.PhotoImage | None = None
+        self.resize_render_after_id: str | None = None
+        self.geometry_save_after_id: str | None = None
+        self.configure(background=colors["bg"])
+        self.title(title or "Kép")
+        self.geometry(self.database.get_setting("image_viewer_geometry", "900x700"))
+        # No transient(master): a transient/dialog-style Toplevel loses its minimize/maximize
+        # buttons on Windows.
+        if self.database.get_setting("image_viewer_state", "normal") == "zoomed":
+            self.after(10, lambda: self.state("zoomed"))
+        self.bind("<Configure>", self.on_window_configure)
+
+        controls = ttk.Frame(self, padding=8)
+        controls.pack(fill="x")
+        ttk.Button(controls, text="－", width=3, command=self.zoom_out).pack(side="left")
+        self.zoom_var = tk.StringVar(value="100%")
+        ttk.Label(controls, textvariable=self.zoom_var, width=6, anchor="center").pack(side="left", padx=4)
+        ttk.Button(controls, text="＋", width=3, command=self.zoom_in).pack(side="left")
+        ttk.Button(controls, text="Eredeti", command=self.zoom_reset).pack(side="left", padx=(6, 0))
+        ttk.Button(controls, text="Bezárás", command=self.destroy).pack(side="right")
+
+        self.image_label = ttk.Label(self, anchor="center")
+        self.image_label.pack(fill="both", expand=True)
+        self.image_label.bind("<Configure>", self.on_area_resized)
+
+    def on_area_resized(self, _event: object) -> None:
+        if self.resize_render_after_id is not None:
+            self.after_cancel(self.resize_render_after_id)
+        self.resize_render_after_id = self.after(80, self.render)
+
+    # Debounces window resize/move/maximize before persisting geometry/state, same pattern as
+    # ReviewWindow.on_window_configure.
+    def on_window_configure(self, event: object) -> None:
+        if event.widget is not self:
+            return
+        if self.geometry_save_after_id is not None:
+            self.after_cancel(self.geometry_save_after_id)
+        self.geometry_save_after_id = self.after(300, self.on_window_resize_settled)
+
+    def on_window_resize_settled(self) -> None:
+        self.geometry_save_after_id = None
+        window_state = self.state()
+        if window_state in ("normal", "zoomed"):
+            self.database.set_setting("image_viewer_state", window_state)
+        if window_state == "normal":
+            self.database.set_setting("image_viewer_geometry", self.geometry())
+
+    def render(self) -> None:
+        self.resize_render_after_id = None
+        self.photo = None
+        if not self.image_path:
+            self.image_label.configure(text="Nincs helyi kép", image="")
+            return
+        try:
+            with Image.open(self.image_path) as source_image:
+                image = source_image.convert("RGB")
+        except (OSError, ValueError):
+            self.image_label.configure(text="A kép nem tölthető be.", image="")
+            return
+        available_width = self.image_label.winfo_width()
+        available_height = self.image_label.winfo_height()
+        if available_width <= 1 or available_height <= 1:
+            available_width, available_height = 860, 620
+        fit_scale = min(available_width / image.width, available_height / image.height)
+        scale = max(fit_scale * self.zoom, 0.02)
+        display_size = (max(int(image.width * scale), 1), max(int(image.height * scale), 1))
+        image = image.resize(display_size, Image.LANCZOS)
+        self.photo = ImageTk.PhotoImage(image)
+        self.image_label.configure(image=self.photo, text="")
+
+    def zoom_in(self) -> None:
+        self.zoom = min(self.zoom * 1.25, 6.0)
+        self.zoom_var.set(f"{self.zoom * 100:.0f}%")
+        self.render()
+
+    def zoom_out(self) -> None:
+        self.zoom = max(self.zoom / 1.25, 0.1)
+        self.zoom_var.set(f"{self.zoom * 100:.0f}%")
+        self.render()
+
+    def zoom_reset(self) -> None:
+        self.zoom = 1.0
+        self.zoom_var.set("100%")
+        self.render()
+
+
+class ReviewWindow(tk.Toplevel):
+    """Grid review of models not yet marked "Megnézve". Each page holds as many records as
+    the tile-count selector says. A tile's "Érdekel" checkbox is saved to that record the
+    moment it's toggled, but the record only becomes "megnézett" (and so disappears from the
+    backlog) once the page is advanced past ("Előre") or the window is closed - either way,
+    the main record list is refreshed on the way out. "Vissza" un-does the single most recent
+    "Előre" and reloads that page for another look."""
+
+    def __init__(self, app: "App") -> None:
+        super().__init__(app)
+        self.app = app
+        self.database = app.database
+        colors = getattr(app, "current_theme", THEMES["light"])
+        self.configure(background=colors["bg"])
+        self.title("Modellek átnézése")
+        # Persisted like the main window's own geometry, so a size the user picked sticks
+        # around. The minimum size is recomputed whenever the tile count changes (see
+        # apply_minsize) so the window can be shrunk down to the smallest size that still
+        # fits one row/column of tiles at their own minimum size, instead of a fixed floor.
+        self.geometry(self.database.get_setting("review_window_geometry", "1280x800"))
+        # No transient(app) and no grab_set(): this used to be a modal (grab_set()) dialog,
+        # but that blocked minimizing the main window while this one was in front - both
+        # windows now behave as independent, freely minimizable top-levels.
+        self.protocol("WM_DELETE_WINDOW", self.close)
+        self.geometry_save_after_id: str | None = None
+        self.bind("<Configure>", self.on_window_configure)
+        if self.database.get_setting("review_window_state", "normal") == "zoomed":
+            self.after(10, lambda: self.state("zoomed"))
+
+        self.tile_photos: list[ImageTk.PhotoImage] = []
+        self.interest_vars: dict[int, tk.BooleanVar] = {}
+        self.current_batch: list[sqlite3.Row] = []
+        # The one page "Vissza" can restore: the batch + checkbox states as they stood right
+        # before the most recent "Előre" committed them. Only one step of undo is kept.
+        self.previous_batch: list[sqlite3.Row] | None = None
+        self.previous_interest: dict[int, bool] = {}
+        self.title_font = tkfont.Font(font=("Segoe UI", 8, "bold"))
+
+        top_bar = ttk.Frame(self, padding=(10, 6))
+        top_bar.pack(fill="x")
+        ttk.Label(top_bar, text="Csempék száma").pack(side="left", padx=(0, 6))
+        self.tile_count_var = tk.StringVar(value=self.database.get_setting("review_tile_count", "9"))
+        count_combo = ttk.Combobox(
+            top_bar,
+            textvariable=self.tile_count_var,
+            values=[str(value) for value in REVIEW_TILE_COUNT_GRID],
+            state="readonly",
+            width=4,
+        )
+        count_combo.pack(side="left")
+        count_combo.bind("<<ComboboxSelected>>", self.on_tile_count_changed)
+        self.status_var = tk.StringVar(value="")
+        ttk.Label(top_bar, textvariable=self.status_var).pack(side="left", padx=(16, 0))
+        # tile_count_var must exist before this - it reads it via tile_count().
+        self.apply_minsize()
+
+        # No scrollbar: build_grid always sizes the tiles to exactly fill this canvas, so there
+        # is never anything to scroll to - a scrollbar here would just eat width for nothing.
+        canvas_frame = ttk.Frame(self)
+        canvas_frame.pack(fill="both", expand=True, padx=10)
+        self.grid_canvas = tk.Canvas(canvas_frame, background=colors["bg"], highlightthickness=0)
+        self.grid_canvas.pack(fill="both", expand=True)
+        self.tiles_frame = ttk.Frame(self.grid_canvas)
+        self.tiles_window = self.grid_canvas.create_window((0, 0), window=self.tiles_frame, anchor="nw")
+        self.grid_canvas.bind(
+            "<Configure>",
+            lambda event: self.grid_canvas.itemconfigure(self.tiles_window, width=event.width, height=event.height),
+        )
+
+        bottom_bar = ttk.Frame(self, padding=10)
+        bottom_bar.pack(fill="x")
+        self.forward_button = ttk.Button(bottom_bar, text="▶  Előre", command=self.commit_and_advance)
+        self.forward_button.pack(side="right")
+        ttk.Button(bottom_bar, text="✕  Bezárás", command=self.close).pack(side="right", padx=(0, 8))
+        self.back_button = ttk.Button(bottom_bar, text="◀  Vissza", command=self.go_back, state="disabled")
+        self.back_button.pack(side="right", padx=(0, 8))
+        self.remaining_var = tk.StringVar(value="")
+        ttk.Label(bottom_bar, textvariable=self.remaining_var).pack(side="left")
+
+        self.load_batch()
+
+    # Falls back to 9 for a stored/typed value that no longer matches an available option.
+    def tile_count(self) -> int:
+        try:
+            value = int(self.tile_count_var.get())
+        except ValueError:
+            value = 9
+        return value if value in REVIEW_TILE_COUNT_GRID else 9
+
+    def on_tile_count_changed(self, _event: object | None = None) -> None:
+        self.database.set_setting("review_tile_count", str(self.tile_count()))
+        self.apply_minsize()
+        self.load_batch()
+
+    # The smallest the window can shrink to while still fitting one full grid of the current
+    # tile count at each tile's own minimum image size - recomputed whenever the tile count
+    # changes, since a 4x4 grid needs more room than a 3x1 one.
+    def apply_minsize(self) -> None:
+        columns, rows = REVIEW_TILE_COUNT_GRID[self.tile_count()]
+        min_width = columns * (REVIEW_TILE_MIN_IMAGE_WIDTH + 32) + 20
+        min_height = rows * (REVIEW_TILE_MIN_IMAGE_HEIGHT + REVIEW_TILE_TEXT_HEIGHT) + 120
+        self.minsize(min_width, min_height)
+
+    # Debounces window resize/move before persisting the geometry and reflowing the grid
+    # (tile image width is computed from the window's own width, so a resize needs a rebuild).
+    def on_window_configure(self, event: object) -> None:
+        if event.widget is not self:
+            return
+        if self.geometry_save_after_id is not None:
+            self.after_cancel(self.geometry_save_after_id)
+        self.geometry_save_after_id = self.after(300, self.on_window_resize_settled)
+
+    def on_window_resize_settled(self) -> None:
+        self.geometry_save_after_id = None
+        # Only "normal"/"zoomed" are meaningful to remember - "iconic" (minimized) shouldn't
+        # make the window reopen minimized next time. geometry() while zoomed reports the
+        # maximized size itself, not the restored one, so it's only saved while normal.
+        window_state = self.state()
+        if window_state in ("normal", "zoomed"):
+            self.database.set_setting("review_window_state", window_state)
+        if window_state == "normal":
+            self.database.set_setting("review_window_geometry", self.geometry())
+        self.build_grid()
+
+    def load_batch(self) -> None:
+        count = self.tile_count()
+        self.current_batch = self.database.all(limit=count, offset=0, include_viewed=False, only_interested=False)
+        self.update_remaining_label()
+        self.build_grid()
+
+    # "Még hátra van" count at the bottom of the window - every not-yet-viewed record,
+    # including the ones on the currently displayed page - plus how many pages of the
+    # current tile count that works out to. Recomputed on every load_batch (so it follows
+    # "Előre") and whenever the tile count changes (see on_tile_count_changed).
+    def update_remaining_label(self) -> None:
+        remaining = self.database.remaining_unviewed_count()
+        pages = math.ceil(remaining / self.tile_count()) if remaining else 0
+        self.remaining_var.set(f"{remaining} modell van még hátra ({pages} oldal).")
+
+    # Rebuilds every tile. preserved_interest carries over in-progress checkbox choices across
+    # a rebuild triggered by a window resize (rather than a fresh batch), so resizing the
+    # window never silently discards a choice the user already made on this page.
+    def build_grid(self, preserved_interest: dict[int, bool] | None = None) -> None:
+        if preserved_interest is None:
+            preserved_interest = {record_id: var.get() for record_id, var in self.interest_vars.items()}
+        for widget in self.tiles_frame.winfo_children():
+            widget.destroy()
+        self.tile_photos.clear()
+        self.interest_vars.clear()
+        if not self.current_batch:
+            self.status_var.set("Nincs több új modell.")
+            self.forward_button.configure(state="disabled")
+            ttk.Label(self.tiles_frame, text="Nincs több új modell.", font=("Segoe UI", 13, "bold"), padding=30).grid(
+                row=0, column=0
+            )
+            return
+        self.forward_button.configure(state="normal")
+        self.status_var.set(f"{len(self.current_batch)} még nem megnézett modell ezen az oldalon.")
+        self.grid_canvas.update_idletasks()
+        canvas_width = self.grid_canvas.winfo_width()
+        canvas_height = self.grid_canvas.winfo_height()
+        if canvas_width <= 1 or canvas_height <= 1:
+            # The canvas has no real size yet (first build right after the window opens) -
+            # retry once it does, rather than falling back to a wrong, tiny tile size.
+            self.after(60, lambda: self.build_grid(preserved_interest))
+            return
+        columns, rows = REVIEW_TILE_COUNT_GRID[self.tile_count()]
+        for column in range(columns):
+            self.tiles_frame.columnconfigure(column, weight=1, uniform="review_tile")
+        for row in range(rows):
+            self.tiles_frame.rowconfigure(row, weight=1, uniform="review_tile_row")
+        # Every tile's width and height is a fixed share of the canvas's own current size (minus
+        # its own grid/border/padding overhead), so all `rows` x `columns` tiles of the page
+        # always fit within the window exactly, with nothing left to scroll to - a resize (which
+        # rebuilds the grid, see on_window_resize_settled) simply recomputes this share.
+        image_width = max(canvas_width // columns - 32, REVIEW_TILE_MIN_IMAGE_WIDTH)
+        image_height = max(canvas_height // rows - REVIEW_TILE_TEXT_HEIGHT, REVIEW_TILE_MIN_IMAGE_HEIGHT)
+        for position, record in enumerate(self.current_batch):
+            row, column = divmod(position, columns)
+            self.build_tile(record, row, column, image_width, image_height, preserved_interest.get(record["id"]))
+
+    def build_tile(
+        self,
+        record: sqlite3.Row,
+        row: int,
+        column: int,
+        image_width: int,
+        image_height: int,
+        initial_interest: bool | None,
+    ) -> None:
+        colors = getattr(self.app, "current_theme", THEMES["light"])
+        tile = ttk.Frame(self.tiles_frame, padding=5, relief="raised", borderwidth=1)
+        tile.grid(row=row, column=column, sticky="new", padx=4, pady=4)
+
+        image_path = self.database.local_image_path(record["id"], record["image_path"])
+        image_canvas = tk.Canvas(
+            tile,
+            width=image_width,
+            height=image_height,
+            background=colors["entry_bg"],
+            highlightthickness=0,
+            cursor="hand2",
+        )
+        image_canvas.pack(fill="x")
+        photo = self.load_tile_image(image_path, image_width, image_height)
+        if photo is not None:
+            self.tile_photos.append(photo)
+            image_canvas.create_image(image_width // 2, image_height // 2, image=photo)
+        else:
+            image_canvas.create_rectangle(0, 0, image_width, image_height, outline=colors["border"])
+            image_canvas.create_text(image_width // 2, image_height // 2, text="Nincs kép", fill=colors["fg"])
+        image_canvas.bind(
+            "<Button-1>", lambda _event, path=image_path, title=record["title"]: self.open_image_viewer(path, title)
+        )
+
+        title_text = self.truncate_to_two_lines(record["title"], image_width)
+        title_label = ttk.Label(
+            tile,
+            text=title_text,
+            wraplength=image_width,
+            justify="center",
+            font=("Segoe UI", 8, "bold"),
+            foreground="#3d8bfd",
+            cursor="hand2",
+        )
+        title_label.pack(pady=(4, 2))
+        title_label.bind("<Button-1>", lambda _event, url=record["url"]: webbrowser.open(url))
+
+        info_row = ttk.Frame(tile)
+        info_row.pack(fill="x")
+        ttk.Label(info_row, text=record["created_at"], font=("Segoe UI", 8)).pack(side="left")
+        interest_var = tk.BooleanVar(value=initial_interest if initial_interest is not None else bool(record["interested"]))
+        self.interest_vars[record["id"]] = interest_var
+        # Saved to the record immediately, without marking it "megnézett" - see the class
+        # docstring and mark_batch_viewed for when it actually leaves the backlog.
+        record_id = record["id"]
+        interest_var.trace_add("write", lambda *_args, rid=record_id, var=interest_var: self.database.update_interested(rid, var.get()))
+        ttk.Checkbutton(info_row, text="Érdekel", variable=interest_var).pack(side="right")
+
+    # Shortens a title with an ellipsis so it never wraps past two lines at the given box
+    # width, using the tile-title font's own text measurement (a fixed char-count cutoff
+    # would be wrong across the range of tile sizes 3x1 up to 4x4 produce).
+    def truncate_to_two_lines(self, text: str, box_width: int) -> str:
+        max_width = max(box_width * 2, 1)
+        if self.title_font.measure(text) <= max_width:
+            return text
+        ellipsis = "…"
+        low, high = 0, len(text)
+        while low < high:
+            mid = (low + high + 1) // 2
+            if self.title_font.measure(text[:mid].rstrip() + ellipsis) <= max_width:
+                low = mid
+            else:
+                high = mid - 1
+        return text[:low].rstrip() + ellipsis
+
+    # "Contain" fit: scales the whole image down to fit inside the box (never up, never
+    # cropped) and centers it - the picture is fitted to the tile rather than the tile being
+    # cropped to the picture, so the full image is always visible.
+    @staticmethod
+    def load_tile_image(image_path: str, box_width: int, box_height: int) -> ImageTk.PhotoImage | None:
+        if not image_path:
+            return None
+        try:
+            with Image.open(image_path) as source_image:
+                image = source_image.convert("RGB")
+        except (OSError, ValueError):
+            return None
+        image.thumbnail((box_width, box_height), Image.LANCZOS)
+        return ImageTk.PhotoImage(image)
+
+    # Opens the bigger, zoomable viewer for one tile's image.
+    def open_image_viewer(self, image_path: str, title: str) -> None:
+        colors = getattr(self.app, "current_theme", THEMES["light"])
+        ImageViewerWindow(self, image_path, title, colors, self.database)
+
+    # Marks the current page as "megnézett" - interested/not_interested was already saved per
+    # checkbox as it was toggled (see build_tile), so this only needs to flip the viewed flag.
+    def mark_batch_viewed(self) -> None:
+        if self.current_batch:
+            self.database.mark_viewed([record["id"] for record in self.current_batch])
+
+    # Commits the current page (marks it viewed) and keeps it as the one page "Vissza" can
+    # restore, then loads whatever the next not-yet-viewed batch turns out to be.
+    def commit_and_advance(self) -> None:
+        self.previous_batch = self.current_batch
+        self.previous_interest = {record["id"]: self.interest_vars[record["id"]].get() for record in self.current_batch}
+        self.mark_batch_viewed()
+        self.back_button.configure(state="normal" if self.previous_batch else "disabled")
+        self.load_batch()
+
+    # Restores the page committed by the most recent "Előre": un-marks it viewed and displays
+    # it again with the checkbox states it had at that point. Only one step of undo is kept.
+    def go_back(self) -> None:
+        if not self.previous_batch:
+            return
+        self.database.mark_unviewed([record["id"] for record in self.previous_batch])
+        self.current_batch = self.previous_batch
+        preserved_interest = self.previous_interest
+        self.previous_batch = None
+        self.previous_interest = {}
+        self.back_button.configure(state="disabled")
+        self.update_remaining_label()
+        self.build_grid(preserved_interest)
+
+    # Refreshes the main record list on the way out, whichever button (or the window's own
+    # close box) triggered it - earlier pages were already committed as they were passed.
+    def close(self) -> None:
+        self.mark_batch_viewed()
+        self.destroy()
+        self.app.load_records()
+
+
 class App(tk.Tk):
     def __init__(self) -> None:
         super().__init__()
@@ -691,6 +1152,8 @@ class App(tk.Tk):
         self.after(150, self.apply_initial_pane_ratio)
         self.after(1000, self.tick_suggested_time)
         self.bind("<Configure>", self.on_window_configure)
+        if self.database.get_setting("window_state", "normal") == "zoomed":
+            self.after(10, lambda: self.state("zoomed"))
 
     def update_startup_status(self, text: str) -> None:
         self.startup_status.set(text)
@@ -755,9 +1218,18 @@ class App(tk.Tk):
 
     def save_window_geometry(self) -> None:
         self.geometry_save_after_id = None
-        geometry = self.geometry()
-        self.database.set_setting("window_geometry", geometry)
-        self.window_size_var.set(geometry)
+        # "iconic" (minimized) is deliberately not persisted - only whether it should reopen
+        # maximized ("zoomed") or not; geometry() while zoomed reports the maximized size
+        # itself, not the restored one, so that's only saved while normal.
+        window_state = self.state()
+        if window_state in ("normal", "zoomed"):
+            self.database.set_setting("window_state", window_state)
+            if hasattr(self, "maximized_var"):
+                self.maximized_var.set(window_state == "zoomed")
+        if window_state == "normal":
+            geometry = self.geometry()
+            self.database.set_setting("window_geometry", geometry)
+            self.window_size_var.set(geometry)
 
     # Persists id/source/title column widths whenever they actually changed (cheap to check,
     # so it's fine that this fires on every click in the list, not just header drags - see
@@ -788,6 +1260,13 @@ class App(tk.Tk):
         key = next((k for k, label in THEME_LABELS.items() if label == self.theme_var.get()), "light")
         self.database.set_setting("theme", key)
         self.apply_theme(key)
+
+    # Applies the "Főablak maximalizálva induljon" checkbox immediately, in addition to
+    # persisting it for the next startup.
+    def on_maximized_toggle(self) -> None:
+        window_state = "zoomed" if self.maximized_var.get() else "normal"
+        self.database.set_setting("window_state", window_state)
+        self.state(window_state)
 
     # Recolors every ttk widget class via a shared Style (forced onto the 'clam' base theme,
     # since Windows' native ttk themes largely ignore custom colors) plus the handful of plain
@@ -939,7 +1418,7 @@ class App(tk.Tk):
         ttk.Label(last_run_row, textvariable=self.suggested_time_var, foreground="#555555").grid(row=0, column=1, sticky="e", padx=(6, 0))
         ttk.Label(input_frame, text="Maximum darabszám (üres = mind)").grid(row=5, column=0, sticky="w", pady=(0, 3))
         ttk.Entry(input_frame, textvariable=self.max_count_var, width=1).grid(row=6, column=0, sticky="ew", pady=(0, 8))
-        self.add_button = ttk.Button(input_frame, text="Adatbetöltés", command=self.load_source_data)
+        self.add_button = ttk.Button(input_frame, text="⬇  Adatbetöltés", command=self.load_source_data)
         self.add_button.grid(row=7, column=0, sticky="ew")
         self.progress_bar = ttk.Progressbar(input_frame, mode="indeterminate")
         self.progress_bar.grid(row=8, column=0, sticky="ew", pady=(10, 0))
@@ -949,11 +1428,12 @@ class App(tk.Tk):
         input_frame.rowconfigure(10, weight=1)
         ttk.Frame(input_frame).grid(row=10, column=0, sticky="nsew")
         ttk.Separator(input_frame).grid(row=11, column=0, sticky="ew", pady=18)
-        ttk.Button(input_frame, text="Kijelölt törlése", command=self.delete_selected_records).grid(row=12, column=0, sticky="ew")
-        ttk.Button(input_frame, text="Elutasított rekordok törlése", command=self.delete_viewed_not_interested).grid(row=13, column=0, sticky="ew", pady=(8, 0))
-        ttk.Button(input_frame, text="Jelölések törlése minden rekordnál", command=self.clear_all_flags).grid(row=14, column=0, sticky="ew", pady=(8, 0))
-        ttk.Button(input_frame, text="URL.txt mentése", command=self.save_url_txt).grid(row=15, column=0, sticky="ew", pady=(8, 0))
-        ttk.Button(input_frame, text="Információ", command=self.show_info_dialog).grid(row=16, column=0, sticky="ew", pady=(8, 0))
+        ttk.Button(input_frame, text="🗑  Kijelölt törlése", command=self.delete_selected_records).grid(row=12, column=0, sticky="ew")
+        ttk.Button(input_frame, text="🗑  Elutasított rekordok törlése", command=self.delete_viewed_not_interested).grid(row=13, column=0, sticky="ew", pady=(8, 0))
+        ttk.Button(input_frame, text="↺  Jelölések törlése minden rekordnál", command=self.clear_all_flags).grid(row=14, column=0, sticky="ew", pady=(8, 0))
+        ttk.Button(input_frame, text="💾  URL.txt mentése", command=self.save_url_txt).grid(row=15, column=0, sticky="ew", pady=(8, 0))
+        ttk.Button(input_frame, text="🖼  Modellek átnézése", command=self.open_review_window).grid(row=16, column=0, sticky="ew", pady=(8, 0))
+        ttk.Button(input_frame, text="ℹ  Információ", command=self.show_info_dialog).grid(row=17, column=0, sticky="ew", pady=(8, 0))
 
         content = ttk.Frame(self, padding=(7, 0, 14, 14))
         content.grid(row=0, column=1, rowspan=2, sticky="nsew")
@@ -974,6 +1454,7 @@ class App(tk.Tk):
         left_toolbar.grid(row=0, column=0, sticky="w")
         self.include_viewed_var = tk.BooleanVar(value=False)
         self.only_interested_var = tk.BooleanVar(value=False)
+        self.only_imported_var = tk.BooleanVar(value=False)
         # Paging through the limited record list, since only one batch is loaded at a time.
         self.prev_batch_button = ttk.Button(left_toolbar, text="◀", width=3, command=self.load_previous_batch, state="disabled")
         self.prev_batch_button.pack(side="left", padx=(0, 4))
@@ -988,7 +1469,8 @@ class App(tk.Tk):
         right_toolbar = ttk.Frame(list_toolbar)
         right_toolbar.grid(row=0, column=2, sticky="e")
         ttk.Checkbutton(right_toolbar, text="Megnézettek mutatása", variable=self.include_viewed_var, command=self.load_records).pack(side="left", padx=(0, 12))
-        ttk.Checkbutton(right_toolbar, text="Csak az érdekeltek", variable=self.only_interested_var, command=self.load_records).pack(side="left")
+        ttk.Checkbutton(right_toolbar, text="Csak az érdekeltek", variable=self.only_interested_var, command=self.load_records).pack(side="left", padx=(0, 12))
+        ttk.Checkbutton(right_toolbar, text="Csak az importáltak", variable=self.only_imported_var, command=self.load_records).pack(side="left")
 
         # A classic tk.PanedWindow gives a draggable, visibly marked divider between the list
         # and the details pane; its position is persisted as a ratio in app_settings.
@@ -1108,45 +1590,89 @@ class App(tk.Tk):
         settings_tab.rowconfigure(2, weight=1)
         general_settings_form = ttk.LabelFrame(settings_tab, text="Adatbetöltés beállításai", padding=10)
         general_settings_form.grid(row=0, column=0, sticky="ew", pady=(0, 10))
+        general_settings_form.columnconfigure(0, weight=1)
         general_settings_form.columnconfigure(1, weight=1)
-        ttk.Label(general_settings_form, text="Egymás utáni azonos rekordok száma").grid(row=0, column=0, sticky="w", padx=(0, 8), pady=3)
-        unchanged_round_limit_row = ttk.Frame(general_settings_form)
+        # Two side-by-side columns of label/value rows, rather than one long single column.
+        settings_col_left = ttk.Frame(general_settings_form)
+        settings_col_left.grid(row=0, column=0, sticky="new")
+        settings_col_left.columnconfigure(1, weight=1)
+        settings_col_right = ttk.Frame(general_settings_form)
+        settings_col_right.grid(row=0, column=1, sticky="new", padx=(24, 0))
+        settings_col_right.columnconfigure(1, weight=1)
+
+        ttk.Label(settings_col_left, text="Egymás utáni azonos rekordok száma").grid(row=0, column=0, sticky="w", padx=(0, 8), pady=3)
+        unchanged_round_limit_row = ttk.Frame(settings_col_left)
         unchanged_round_limit_row.grid(row=0, column=1, sticky="w", pady=3)
         ttk.Entry(unchanged_round_limit_row, textvariable=self.unchanged_round_limit_var, width=10).pack(side="left")
         ttk.Label(unchanged_round_limit_row, text="db").pack(side="left", padx=(4, 0))
-        ttk.Label(general_settings_form, text="Lista/Részletek panel arány").grid(row=1, column=0, sticky="w", padx=(0, 8), pady=3)
+        ttk.Label(settings_col_right, text="Lista/Részletek panel arány").grid(row=0, column=0, sticky="w", padx=(0, 8), pady=3)
         self.pane_ratio_var = tk.StringVar(value=f"{self.list_pane_ratio * 100:.0f}%")
-        ttk.Label(general_settings_form, textvariable=self.pane_ratio_var).grid(row=1, column=1, sticky="w", pady=3)
-        ttk.Label(general_settings_form, text="Rekordlista limit (üres = mind)").grid(row=2, column=0, sticky="w", padx=(0, 8), pady=3)
+        ttk.Label(settings_col_right, textvariable=self.pane_ratio_var).grid(row=0, column=1, sticky="w", pady=3)
+
+        ttk.Label(settings_col_left, text="Rekordlista limit (üres = mind)").grid(row=1, column=0, sticky="w", padx=(0, 8), pady=3)
         self.record_list_limit_var = tk.StringVar(value=self.database.get_setting("record_list_limit", "500"))
         self.record_list_limit_var.trace_add(
             "write", lambda *_args: self.database.set_setting("record_list_limit", self.record_list_limit_var.get().strip())
         )
-        record_list_limit_row = ttk.Frame(general_settings_form)
-        record_list_limit_row.grid(row=2, column=1, sticky="w", pady=3)
+        record_list_limit_row = ttk.Frame(settings_col_left)
+        record_list_limit_row.grid(row=1, column=1, sticky="w", pady=3)
         ttk.Entry(record_list_limit_row, textvariable=self.record_list_limit_var, width=10).pack(side="left")
         ttk.Label(record_list_limit_row, text="db").pack(side="left", padx=(4, 0))
-        ttk.Label(general_settings_form, text="Ablak mérete").grid(row=3, column=0, sticky="w", padx=(0, 8), pady=3)
-        ttk.Label(general_settings_form, textvariable=self.window_size_var).grid(row=3, column=1, sticky="w", pady=3)
+        ttk.Label(settings_col_right, text="Ablak mérete").grid(row=1, column=0, sticky="w", padx=(0, 8), pady=3)
+        ttk.Label(settings_col_right, textvariable=self.window_size_var).grid(row=1, column=1, sticky="w", pady=3)
+
         column_width_labels = {"id": "ID oszlop szélessége", "source": "Forrás oszlop szélessége", "title": "Cím oszlop szélessége"}
-        for offset, column in enumerate(self.persisted_columns):
-            row = 4 + offset
-            ttk.Label(general_settings_form, text=column_width_labels[column]).grid(row=row, column=0, sticky="w", padx=(0, 8), pady=3)
+        column_width_positions = {"id": (settings_col_left, 2), "source": (settings_col_right, 2), "title": (settings_col_left, 3)}
+        for column in self.persisted_columns:
+            parent, row = column_width_positions[column]
+            ttk.Label(parent, text=column_width_labels[column]).grid(row=row, column=0, sticky="w", padx=(0, 8), pady=3)
             self.column_width_vars[column].trace_add(
                 "write", lambda *_args, column=column: self.apply_column_width_setting(column)
             )
-            column_width_row = ttk.Frame(general_settings_form)
+            column_width_row = ttk.Frame(parent)
             column_width_row.grid(row=row, column=1, sticky="w", pady=3)
             ttk.Entry(column_width_row, textvariable=self.column_width_vars[column], width=10).pack(side="left")
             ttk.Label(column_width_row, text="px").pack(side="left", padx=(4, 0))
-        theme_row = 4 + len(self.persisted_columns)
-        ttk.Label(general_settings_form, text="Kinézet").grid(row=theme_row, column=0, sticky="w", padx=(0, 8), pady=3)
+
+        ttk.Label(settings_col_right, text="Kinézet").grid(row=3, column=0, sticky="w", padx=(0, 8), pady=3)
         self.theme_var = tk.StringVar(value=THEME_LABELS.get(self.database.get_setting("theme", "light"), THEME_LABELS["light"]))
         theme_combo = ttk.Combobox(
-            general_settings_form, textvariable=self.theme_var, values=list(THEME_LABELS.values()), state="readonly", width=14
+            settings_col_right, textvariable=self.theme_var, values=list(THEME_LABELS.values()), state="readonly", width=14
         )
-        theme_combo.grid(row=theme_row, column=1, sticky="w", pady=3)
+        theme_combo.grid(row=3, column=1, sticky="w", pady=3)
         theme_combo.bind("<<ComboboxSelected>>", self.on_theme_selected)
+
+        ttk.Label(settings_col_left, text="Átnézés ablak csempeszáma").grid(row=4, column=0, sticky="w", padx=(0, 8), pady=3)
+        self.review_tile_count_var = tk.StringVar(value=self.database.get_setting("review_tile_count", "9"))
+        review_tile_count_combo = ttk.Combobox(
+            settings_col_left,
+            textvariable=self.review_tile_count_var,
+            values=[str(value) for value in REVIEW_TILE_COUNT_GRID],
+            state="readonly",
+            width=12,
+        )
+        review_tile_count_combo.grid(row=4, column=1, sticky="w", pady=3)
+        review_tile_count_combo.bind(
+            "<<ComboboxSelected>>",
+            lambda _event: self.database.set_setting("review_tile_count", self.review_tile_count_var.get()),
+        )
+        self.review_maximized_var = tk.BooleanVar(value=self.database.get_setting("review_window_state", "normal") == "zoomed")
+        ttk.Checkbutton(
+            settings_col_right,
+            text="Átnézés ablak maximalizálva induljon",
+            variable=self.review_maximized_var,
+            command=lambda: self.database.set_setting(
+                "review_window_state", "zoomed" if self.review_maximized_var.get() else "normal"
+            ),
+        ).grid(row=4, column=0, columnspan=2, sticky="w", pady=3)
+
+        self.maximized_var = tk.BooleanVar(value=self.database.get_setting("window_state", "normal") == "zoomed")
+        ttk.Checkbutton(
+            settings_col_left,
+            text="Főablak maximalizálva induljon",
+            variable=self.maximized_var,
+            command=self.on_maximized_toggle,
+        ).grid(row=5, column=0, columnspan=2, sticky="w", pady=3)
         settings_form = ttk.LabelFrame(settings_tab, text="Forrásprofil beállításai", padding=10)
         settings_form.grid(row=1, column=0, sticky="ew", pady=(0, 10))
         settings_form.columnconfigure(1, weight=1)
@@ -1345,6 +1871,7 @@ class App(tk.Tk):
             self.record_offset,
             include_viewed=self.include_viewed_var.get(),
             only_interested=self.only_interested_var.get(),
+            only_imported=self.only_imported_var.get(),
         )
         for item_id in self.record_tree.get_children():
             self.record_tree.delete(item_id)
@@ -1931,6 +2458,11 @@ class App(tk.Tk):
         self.load_records()
         self.status_var.set(f"{len(pending)} URL mentve és importáltra jelölve.")
 
+    # Opens the modal tile-grid review window; ReviewWindow.close() refreshes the record
+    # list once it exits, whichever way the user leaves it.
+    def open_review_window(self) -> None:
+        ReviewWindow(self)
+
     def clear_all_flags(self) -> None:
         if not messagebox.askyesno(
             "Jelölések törlése",
@@ -1943,7 +2475,6 @@ class App(tk.Tk):
 
     def open_url(self, _event: object | None = None) -> None:
         if self.records and self.index >= 0:
-            import webbrowser
             webbrowser.open(self.records[self.index]["url"])
 
     # Program name/version, changelog, description and detailed help, in that order, each

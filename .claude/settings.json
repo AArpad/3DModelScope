@@ -22,7 +22,9 @@
       "Bash(python3 -c ' *)",
       "Bash(git status *)",
       "Bash(python -m py_compile sources/thingiverse.py)",
-      "Bash(python -m pyflakes sources/thingiverse.py app.py)"
+      "Bash(python -m pyflakes sources/thingiverse.py app.py)",
+      "Bash(timeout 6 python app.py)",
+      "Bash(echo \"exit_code=$?\")"
     ],
     "additionalDirectories": [
       "C:\\Users\\ÁrpádNagykékesi\\Documents\\Python\\3DSites",
